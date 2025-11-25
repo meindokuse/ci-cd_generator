@@ -29,7 +29,7 @@ def main():
         print("ШАГ 1: Анализ проекта")
         print("-" * 70)
 
-        analyzer = ProjectAnalyzer(".")
+        analyzer = ProjectAnalyzer("..")
         summary = analyzer.get_summary()
 
         print(f"✅ Язык: {summary['language']}")
