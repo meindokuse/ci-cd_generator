@@ -163,8 +163,10 @@ class BuildStageGenerator:
     def _get_nexus_repo(self, language: str) -> str:
         repos = {
             'java': 'maven-releases',
+            'kotlin': 'maven-releases',
             'python': 'pypi-hosted',
             'node': 'npm-hosted',
+            'typescript': 'npm-hosted',
             'go': 'raw-hosted',
             'rust': 'raw-hosted',
         }
@@ -173,15 +175,17 @@ class BuildStageGenerator:
     def _get_artifactory_repo(self, language: str) -> str:
         repos = {
             'java': 'libs-release-local',
+            'kotlin': 'libs-release-local',
             'python': 'pypi-local',
             'node': 'npm-local',
+            'typescript': 'npm-local',
             'go': 'go-local',
             'rust': 'generic-local',
         }
         return repos.get(language, 'generic-local')
 
     def _get_group_id(self, language: str) -> str:
-        if language == 'java':
+        if language in ['java', 'kotlin']:
             return 'com.example'
         return language
 

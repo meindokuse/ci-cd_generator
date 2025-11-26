@@ -88,6 +88,13 @@ def main():
     Что делать после сборки
     (default: server если Dockerfile есть, иначе github)
 
+ПОДДЕРЖИВАЕМЫЕ ЯЗЫКИ:
+
+  • Java/Kotlin (pom.xml, build.gradle)
+  • Go (go.mod)
+  • TypeScript (tsconfig.json, package.json)
+  • Python (requirements.txt, setup.py)
+
 ПРИМЕРЫ:
 
   # Без флагов: автоопределение
@@ -111,15 +118,12 @@ def main():
   python main.py --sync nexus
   python main.py --sync artifactory
   python main.py --sync gitlab-artifacts
-
-  # Только build (без deploy)
-  python main.py --sync docker-registry
         """
     )
 
     parser.add_argument('--sync',
                         choices=['docker-registry', 'nexus', 'artifactory', 'gitlab-artifacts'],
-                        default=None,  # ← None = автоопределение
+                        default=None,
                         help='Где синхронизировать артефакты (опционально, автоопределение)')
 
     parser.add_argument('--docker-gen',
@@ -129,7 +133,7 @@ def main():
 
     parser.add_argument('--deploy',
                         choices=['server', 'github'],
-                        default=None,  # ← None = автоопределение
+                        default=None,
                         help='Что делать после сборки (опционально, автоопределение)')
 
     args = parser.parse_args()

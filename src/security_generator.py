@@ -55,7 +55,36 @@ class SecurityStageGenerator:
     - docker
 """,
 
+        'typescript': """security:
+  stage: security
+  image: node:{{ version }}-alpine
+  script:
+    - npm install
+    - echo "Running: npm audit"
+    - npm audit --audit-level=moderate || true
+  allow_failure: true
+  only:
+    - main
+    - merge_requests
+  tags:
+    - docker
+""",
+
         'java': """security:
+  stage: security
+  image: maven:3.9-eclipse-temurin-{{ version }}
+  script:
+    - echo "Running: dependency-check"
+    - mvn dependency-check:check || true
+  allow_failure: true
+  only:
+    - main
+    - merge_requests
+  tags:
+    - docker
+""",
+
+        'kotlin': """security:
   stage: security
   image: maven:3.9-eclipse-temurin-{{ version }}
   script:

@@ -56,12 +56,44 @@ class LintStageGenerator:
     - docker
 """,
 
+        'typescript': """lint:
+  stage: lint
+  image: node:{{ version }}-alpine
+  script:
+    - npm install
+    - echo "Running: eslint"
+    - npx eslint . --ext .ts,.tsx || true
+    - echo "Running: tsc"
+    - npx tsc --noEmit || true
+  allow_failure: true
+  only:
+    - main
+    - merge_requests
+  tags:
+    - docker
+""",
+
         'java': """lint:
   stage: lint
   image: maven:3.9-eclipse-temurin-{{ version }}
   script:
     - echo "Running: checkstyle"
     - mvn checkstyle:check || true
+  allow_failure: true
+  only:
+    - main
+    - merge_requests
+  tags:
+    - docker
+""",
+
+        'kotlin': """lint:
+  stage: lint
+  image: maven:3.9-eclipse-temurin-{{ version }}
+  script:
+    - mvn install -DskipTests
+    - echo "Running: detekt"
+    - mvn antrun:run@detekt || true
   allow_failure: true
   only:
     - main

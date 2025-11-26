@@ -22,11 +22,19 @@ class ProjectAnalyzer:
         },
         'node': {
             'high': ['package.json'],
-            'medium': ['*.js', '*.ts']
+            'medium': ['*.js', '*.ts', '*.tsx']
+        },
+        'typescript': {
+            'high': ['tsconfig.json'],
+            'medium': ['*.ts', '*.tsx']
         },
         'java': {
             'high': ['pom.xml', 'build.gradle'],
             'medium': ['*.java']
+        },
+        'kotlin': {
+            'high': ['pom.xml', 'build.gradle', 'build.gradle.kts'],
+            'medium': ['*.kt']
         },
         'php': {
             'high': ['composer.json'],
@@ -93,7 +101,42 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 CMD wget -
 CMD ["npm", "start"]
 """,
 
+        'typescript': """FROM node:{{ version }}-alpine as builder
+WORKDIR /app
+COPY package*.json tsconfig.json ./
+RUN npm ci
+RUN npm run build
+
+FROM node:{{ version }}-alpine
+RUN adduser -D -u 1000 appuser
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --only=production
+COPY --from=builder --chown=appuser:appuser /app/dist ./dist
+EXPOSE 3000
+USER appuser
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 CMD wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1
+CMD ["npm", "start"]
+""",
+
         'java': """FROM maven:3.9-eclipse-temurin-{{ version }} as builder
+WORKDIR /app
+COPY pom.xml .
+RUN mvn dependency:go-offline
+COPY . .
+RUN mvn clean package -DskipTests
+
+FROM eclipse-temurin:{{ version }}-jre-alpine
+RUN adduser -D -u 1000 appuser
+WORKDIR /app
+COPY --from=builder --chown=appuser:appuser /app/target/*.jar app.jar
+EXPOSE 3000
+USER appuser
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 CMD wget --no-verbose --tries=1 --spider http://localhost:3000/actuator/health || exit 1
+CMD ["java", "-jar", "app.jar"]
+""",
+
+        'kotlin': """FROM maven:3.9-eclipse-temurin-{{ version }} as builder
 WORKDIR /app
 COPY pom.xml .
 RUN mvn dependency:go-offline
@@ -214,7 +257,9 @@ CMD ["rails", "server", "-b", "0.0.0.0", "-p", "3000"]
             'python': f"python:{self.data['version']}-slim",
             'go': f"golang:{self.data['version']}-alpine",
             'node': f"node:{self.data['version']}-alpine",
+            'typescript': f"node:{self.data['version']}-alpine",
             'java': f"maven:3.9-eclipse-temurin-{self.data['version']}",
+            'kotlin': f"maven:3.9-eclipse-temurin-{self.data['version']}",
             'php': f"php:{self.data['version']}-cli",
             'rust': f"rust:{self.data['version']}",
             'ruby': f"ruby:{self.data['version']}-alpine",
@@ -242,7 +287,19 @@ CMD ["rails", "server", "-b", "0.0.0.0", "-p", "3000"]
                 'artifact_name': '*.tgz',
                 'artifact_type': 'npm'
             },
+            'typescript': {
+                'build_command': 'npm run build && npm pack',
+                'artifact_path': '*.tgz',
+                'artifact_name': '*.tgz',
+                'artifact_type': 'npm'
+            },
             'java': {
+                'build_command': 'mvn clean package',
+                'artifact_path': 'target/*.jar',
+                'artifact_name': '*.jar',
+                'artifact_type': 'jar'
+            },
+            'kotlin': {
                 'build_command': 'mvn clean package',
                 'artifact_path': 'target/*.jar',
                 'artifact_name': '*.jar',
@@ -320,9 +377,9 @@ CMD ["rails", "server", "-b", "0.0.0.0", "-p", "3000"]
             return self._detect_python_version()
         elif language == 'go':
             return self._detect_go_version()
-        elif language == 'node':
+        elif language in ['node', 'typescript']:
             return self._detect_node_version()
-        elif language == 'java':
+        elif language in ['java', 'kotlin']:
             return self._detect_java_version()
         elif language == 'php':
             return self._detect_php_version()
