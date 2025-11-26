@@ -6,6 +6,7 @@ from project_analyzer import ProjectAnalyzer
 from build_generator import BuildStageGenerator
 from lint_generator import LintStageGenerator
 from security_generator import SecurityStageGenerator
+from test_generator import TestStageGenerator
 
 
 class FinalCIGenerator:
@@ -33,6 +34,14 @@ class FinalCIGenerator:
         build_gen = BuildStageGenerator(self.config['dockerfile_info'])
         self.stages['build'] = build_gen.get_output_string()
 
+        # Test stage
+        print("  → Генерирую Test stage...")
+        test_gen = TestStageGenerator(
+            self.config['language'],
+            self.config['base_image']
+        )
+        self.stages['test'] = test_gen.get_output_string()
+
         # Lint stage
         print("  → Генерирую LINT stage...")
         lint_gen = LintStageGenerator(
@@ -57,6 +66,7 @@ class FinalCIGenerator:
 
         config = """stages:
   - build
+  - test
   - lint
   - security
 
