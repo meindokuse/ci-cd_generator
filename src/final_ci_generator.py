@@ -3,6 +3,8 @@
 from project_analyzer import ProjectAnalyzer
 from build_generator import BuildStageGenerator
 from lint_generator import LintStageGenerator
+from sonarqube_generator import SonarQubeStageGenerator
+from test_generator import TestStageGenerator
 from security_generator import SecurityStageGenerator
 from deploy_generator import DeployStageGenerator
 
@@ -33,6 +35,15 @@ class FinalCIGenerator:
         build_gen = BuildStageGenerator(self.config, self.sync_target)
         self.stages['build'] = build_gen.get_output_string()
 
+        # Test (Unit + Integration)
+        print("  → Генерирую TEST stages...")
+        test_gen = TestStageGenerator(
+            self.config['language'],
+            self.config['version'],
+            has_docker_compose=self.config.get('docker_compose_exists', False)
+        )
+        self.stages['test'] = test_gen.get_output_string()
+
         # Lint
         print("  → Генерирую LINT stage...")
         lint_gen = LintStageGenerator(
@@ -40,6 +51,14 @@ class FinalCIGenerator:
             self.config['version']
         )
         self.stages['lint'] = lint_gen.get_output_string()
+
+        # SonarQube
+        print("  → Генерирую SONARQUBE stage...")
+        sonar_gen = SonarQubeStageGenerator(
+            self.config['language'],
+            self.config['version']
+        )
+        self.stages['sonarqube'] = sonar_gen.get_output_string()
 
         # Security
         print("  → Генерирую SECURITY stage...")
@@ -61,7 +80,7 @@ class FinalCIGenerator:
     def assemble_config(self) -> str:
         """Собирает финальный .gitlab-ci.yml"""
 
-        stages_list = "  - build\n  - lint\n  - security"
+        stages_list = "  - build\n  - test\n  - lint\n  - sonarqube\n  - security\n  - integration"
         if self.deploy_target:
             stages_list += "\n  - deploy"
 
@@ -76,12 +95,11 @@ variables:
   DOCKER_IMAGE_LATEST: "$CI_REGISTRY_IMAGE:latest"
   SSH_PORT: "22"
   DEPLOY_ENV: "production"
-"""
-        elif self.sync_target in ['nexus', 'artifactory']:
-            config += """  ARTIFACT_VERSION: "$CI_PIPELINE_ID"
+  SONAR_HOST_URL: "http://sonarqube:9000"
 """
         else:
             config += """  ARTIFACT_VERSION: "$CI_PIPELINE_ID"
+  SONAR_HOST_URL: "http://sonarqube:9000"
 """
 
         config += "\n"
@@ -110,13 +128,29 @@ variables:
         print(f"   Версия: {self.config['version']}")
         print(f"   Dockerfile: {'✅ Найден' if self.config['dockerfile_exists'] else '❌ Не найден'}")
 
+        if self.config.get('docker_compose_exists'):
+            compose_info = self.config.get('docker_compose_info', {})
+            print(f"   docker-compose.yml: ✅ Найден")
+            print(f"      Файл: {compose_info.get('filename')}")
+            print(f"      Сервисов: {compose_info.get('service_count', 0)}")
+            if compose_info.get('services'):
+                print(f"      Список: {', '.join(compose_info['services'])}")
+        else:
+            print(f"   docker-compose.yml: ❌ Не найден")
+
+        if self.config.get('is_monorepo'):
+            print(f"\n   🏗️  Тип: Monorepo")
+            print(f"   Сервисов с Dockerfile: {len(self.config['services'])}")
+            for svc in self.config['services']:
+                print(f"      → {svc['name']} ({svc['path']})")
+
         print(f"\n🔄 Конфигурация:")
         print(f"   Sync target: {self.sync_target}")
         if self.deploy_target:
             print(f"   Deploy target: {self.deploy_target}")
 
         print(f"\n🎯 Stages:")
-        for stage in ['build', 'lint', 'security', 'deploy']:
+        for stage in ['build', 'test', 'lint', 'sonarqube', 'security', 'integration', 'deploy']:
             if stage in self.stages:
                 print(f"   ✅ {stage}")
 
