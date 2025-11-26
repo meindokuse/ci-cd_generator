@@ -6,7 +6,6 @@ from lint_generator import LintStageGenerator
 from sonarqube_generator import SonarQubeStageGenerator
 from test_generator import TestStageGenerator
 from security_generator import SecurityStageGenerator
-from deploy_generator import DeployStageGenerator
 
 
 class FinalCIGenerator:
@@ -70,10 +69,10 @@ class FinalCIGenerator:
         self.stages['security'] = security_gen.get_output_string()
 
         # Deploy
-        if self.deploy_target:
-            print(f"  → Генерирую DEPLOY stage ({self.sync_target} → {self.deploy_target})...")
-            deploy_gen = DeployStageGenerator(self.config, self.sync_target, self.deploy_target)
-            self.stages['deploy'] = deploy_gen.get_output_string()
+        # if self.deploy_target:
+        #     print(f"  → Генерирую DEPLOY stage ({self.sync_target} → {self.deploy_target})...")
+        #     deploy_gen = DeployStageGenerator(self.config, self.sync_target, self.deploy_target)
+        #     self.stages['deploy'] = deploy_gen.get_output_string()
 
         print("\n✅ Все stage'и готовы\n")
 
