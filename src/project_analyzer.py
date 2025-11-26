@@ -4,7 +4,7 @@ import os
 import glob
 import json
 import re
-from typing import Dict
+from typing import Dict, List
 from jinja2 import Template
 
 
@@ -22,11 +22,19 @@ class ProjectAnalyzer:
         },
         'node': {
             'high': ['package.json'],
-            'medium': ['*.js', '*.ts']
+            'medium': ['*.js', '*.ts', '*.tsx']
+        },
+        'typescript': {
+            'high': ['tsconfig.json'],
+            'medium': ['*.ts', '*.tsx']
         },
         'java': {
             'high': ['pom.xml', 'build.gradle'],
             'medium': ['*.java']
+        },
+        'kotlin': {
+            'high': ['pom.xml', 'build.gradle', 'build.gradle.kts'],
+            'medium': ['*.kt']
         },
         'php': {
             'high': ['composer.json'],
@@ -93,7 +101,42 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 CMD wget -
 CMD ["npm", "start"]
 """,
 
+        'typescript': """FROM node:{{ version }}-alpine as builder
+WORKDIR /app
+COPY package*.json tsconfig.json ./
+RUN npm ci
+RUN npm run build
+
+FROM node:{{ version }}-alpine
+RUN adduser -D -u 1000 appuser
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --only=production
+COPY --from=builder --chown=appuser:appuser /app/dist ./dist
+EXPOSE 3000
+USER appuser
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 CMD wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1
+CMD ["npm", "start"]
+""",
+
         'java': """FROM maven:3.9-eclipse-temurin-{{ version }} as builder
+WORKDIR /app
+COPY pom.xml .
+RUN mvn dependency:go-offline
+COPY . .
+RUN mvn clean package -DskipTests
+
+FROM eclipse-temurin:{{ version }}-jre-alpine
+RUN adduser -D -u 1000 appuser
+WORKDIR /app
+COPY --from=builder --chown=appuser:appuser /app/target/*.jar app.jar
+EXPOSE 3000
+USER appuser
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 CMD wget --no-verbose --tries=1 --spider http://localhost:3000/actuator/health || exit 1
+CMD ["java", "-jar", "app.jar"]
+""",
+
+        'kotlin': """FROM maven:3.9-eclipse-temurin-{{ version }} as builder
 WORKDIR /app
 COPY pom.xml .
 RUN mvn dependency:go-offline
@@ -186,13 +229,35 @@ CMD ["rails", "server", "-b", "0.0.0.0", "-p", "3000"]
             os.path.join(self.project_path, "Dockerfile")
         )
 
-        # 4. Генерируем Dockerfile если нужно
+        # 4. Проверяем docker-compose.yml
+        self.data['docker_compose_exists'] = self._check_docker_compose()
+
+        if self.data['docker_compose_exists']:
+            self.data['docker_compose_info'] = self._parse_docker_compose()
+
+            # Определяем: monorepo или нет
+            services_with_build = self._extract_services_with_build()
+
+            if len(services_with_build) > 1:
+                self.data['is_monorepo'] = True
+                self.data['services'] = services_with_build
+                print(f"✅ Обнаружен Monorepo ({len(services_with_build)} сервисов)")
+                for svc in services_with_build:
+                    print(f"   → {svc['name']} ({svc['path']})")
+            else:
+                self.data['is_monorepo'] = False
+                self.data['services'] = []
+        else:
+            self.data['is_monorepo'] = False
+            self.data['services'] = []
+
+        # 5. Генерируем Dockerfile если нужно
         if not self.data['dockerfile_exists'] and self.docker_gen:
             print(f"   🔨 Генерирую Dockerfile для {language}:{self.data['version']}...")
             self._generate_dockerfile(language)
             self.data['dockerfile_exists'] = True
 
-        # 5. Определяем базовый образ
+        # 6. Определяем базовый образ
         if self.data['dockerfile_exists']:
             self.data['dockerfile_info'] = self._parse_dockerfile()
             self.data['base_image'] = self.data['dockerfile_info']['final_image']
@@ -200,12 +265,15 @@ CMD ["rails", "server", "-b", "0.0.0.0", "-p", "3000"]
             self.data['dockerfile_info'] = None
             self.data['base_image'] = self._get_build_image(language)
 
-        # 6. Определяем артефакты
+        # 7. Определяем артефакты
         self.data['artifact_paths'] = self._detect_artifact_paths(language)
 
         print(f"✅ Язык: {language}")
         print(f"✅ Версия: {self.data['version']}")
         print(f"✅ Dockerfile: {'Найден ✅' if self.data['dockerfile_exists'] else 'Не найден ❌'}")
+        print(f"✅ docker-compose.yml: {'Найден ✅' if self.data['docker_compose_exists'] else 'Не найден ❌'}")
+        if self.data.get('is_monorepo'):
+            print(f"✅ Тип проекта: Monorepo ({len(self.data['services'])} сервисов)")
         print("✅ Анализ завершён\n")
 
     def _get_build_image(self, language: str) -> str:
@@ -214,7 +282,9 @@ CMD ["rails", "server", "-b", "0.0.0.0", "-p", "3000"]
             'python': f"python:{self.data['version']}-slim",
             'go': f"golang:{self.data['version']}-alpine",
             'node': f"node:{self.data['version']}-alpine",
+            'typescript': f"node:{self.data['version']}-alpine",
             'java': f"maven:3.9-eclipse-temurin-{self.data['version']}",
+            'kotlin': f"maven:3.9-eclipse-temurin-{self.data['version']}",
             'php': f"php:{self.data['version']}-cli",
             'rust': f"rust:{self.data['version']}",
             'ruby': f"ruby:{self.data['version']}-alpine",
@@ -242,7 +312,19 @@ CMD ["rails", "server", "-b", "0.0.0.0", "-p", "3000"]
                 'artifact_name': '*.tgz',
                 'artifact_type': 'npm'
             },
+            'typescript': {
+                'build_command': 'npm run build && npm pack',
+                'artifact_path': '*.tgz',
+                'artifact_name': '*.tgz',
+                'artifact_type': 'npm'
+            },
             'java': {
+                'build_command': 'mvn clean package',
+                'artifact_path': 'target/*.jar',
+                'artifact_name': '*.jar',
+                'artifact_type': 'jar'
+            },
+            'kotlin': {
                 'build_command': 'mvn clean package',
                 'artifact_path': 'target/*.jar',
                 'artifact_name': '*.jar',
@@ -320,9 +402,9 @@ CMD ["rails", "server", "-b", "0.0.0.0", "-p", "3000"]
             return self._detect_python_version()
         elif language == 'go':
             return self._detect_go_version()
-        elif language == 'node':
+        elif language in ['node', 'typescript']:
             return self._detect_node_version()
-        elif language == 'java':
+        elif language in ['java', 'kotlin']:
             return self._detect_java_version()
         elif language == 'php':
             return self._detect_php_version()
@@ -432,6 +514,114 @@ CMD ["rails", "server", "-b", "0.0.0.0", "-p", "3000"]
         parser = DockerfileParser(os.path.join(self.project_path, "Dockerfile"))
         return parser.get_summary()
 
+    def _check_docker_compose(self) -> bool:
+        """Проверяет существование docker-compose файлов"""
+        compose_files = [
+            'docker-compose.yml',
+            'docker-compose.yaml',
+            'compose.yml',
+            'compose.yaml'
+        ]
+
+        for filename in compose_files:
+            if os.path.exists(os.path.join(self.project_path, filename)):
+                return True
+
+        return False
+
+    def _parse_docker_compose(self) -> Dict:
+        """Парсит docker-compose.yml"""
+        import yaml
+
+        compose_files = [
+            'docker-compose.yml',
+            'docker-compose.yaml',
+            'compose.yml',
+            'compose.yaml'
+        ]
+
+        for filename in compose_files:
+            filepath = os.path.join(self.project_path, filename)
+            if os.path.exists(filepath):
+                try:
+                    with open(filepath, 'r', encoding='utf-8') as f:
+                        compose_data = yaml.safe_load(f)
+
+                    services = compose_data.get('services', {})
+
+                    return {
+                        'filename': filename,
+                        'services': list(services.keys()),
+                        'service_count': len(services),
+                        'has_build': any('build' in svc for svc in services.values()),
+                        'has_image': any('image' in svc for svc in services.values()),
+                        'networks': list(compose_data.get('networks', {}).keys()),
+                        'volumes': list(compose_data.get('volumes', {}).keys()),
+                    }
+                except Exception as e:
+                    print(f"⚠️  Не удалось распарсить {filename}: {e}")
+                    return {
+                        'filename': filename,
+                        'services': [],
+                        'service_count': 0,
+                        'has_build': False,
+                        'has_image': False,
+                        'networks': [],
+                        'volumes': [],
+                    }
+
+        return {}
+
+    def _extract_services_with_build(self) -> List[Dict]:
+        """Извлекает сервисы с build директивой из docker-compose.yml"""
+        import yaml
+
+        compose_files = [
+            'docker-compose.yml',
+            'docker-compose.yaml',
+            'compose.yml',
+            'compose.yaml'
+        ]
+
+        for filename in compose_files:
+            filepath = os.path.join(self.project_path, filename)
+            if os.path.exists(filepath):
+                try:
+                    with open(filepath, 'r', encoding='utf-8') as f:
+                        compose_data = yaml.safe_load(f)
+
+                    services = compose_data.get('services', {})
+                    services_with_build = []
+
+                    for service_name, service_config in services.items():
+                        if 'build' in service_config:
+                            build_path = service_config['build']
+
+                            # build может быть строкой или объектом
+                            if isinstance(build_path, dict):
+                                build_path = build_path.get('context', '.')
+
+                            # Проверяем существование Dockerfile
+                            dockerfile_path = os.path.join(
+                                self.project_path,
+                                build_path,
+                                'Dockerfile'
+                            )
+
+                            if os.path.exists(dockerfile_path):
+                                services_with_build.append({
+                                    'name': service_name,
+                                    'path': build_path,
+                                    'dockerfile': dockerfile_path
+                                })
+
+                    return services_with_build
+
+                except Exception as e:
+                    print(f"⚠️  Ошибка парсинга {filename}: {e}")
+
+        return []
+
     def get_summary(self) -> Dict:
         """Возвращает сводку"""
         return {
@@ -439,6 +629,10 @@ CMD ["rails", "server", "-b", "0.0.0.0", "-p", "3000"]
             'version': self.data['version'],
             'dockerfile_exists': self.data['dockerfile_exists'],
             'dockerfile_info': self.data.get('dockerfile_info'),
+            'docker_compose_exists': self.data.get('docker_compose_exists', False),
+            'docker_compose_info': self.data.get('docker_compose_info'),
+            'is_monorepo': self.data.get('is_monorepo', False),
+            'services': self.data.get('services', []),
             'base_image': self.data['base_image'],
             'artifact_paths': self.data.get('artifact_paths'),
             'language_info': self.data['language_info'],
