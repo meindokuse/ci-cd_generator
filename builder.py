@@ -69,9 +69,14 @@ def build_project():
 
         # Проверяем результат
         exe_path = dist_dir / "Generator.exe"
+        dist_path = dist_dir / "Generator"
         if exe_path.exists():
             size_mb = exe_path.stat().st_size / (1024 * 1024)
             print(f"   📦 Создан: {exe_path.name} ({size_mb:.1f} MB)")
+            return True
+        elif dist_path.exists():
+            size_mb = dist_path.stat().st_size / (1024 * 1024)
+            print(f"   📦 Создан: {dist_path.name} ({size_mb:.1f} MB)")
             return True
         else:
             print("   ❌ Исполняемый файл не создан")

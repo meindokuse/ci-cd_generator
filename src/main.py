@@ -1,93 +1,218 @@
 #!/usr/bin/env python3
-"""
-Генератор CI/CD конфига для GitLab
-Поддерживает: Python, Go, Node, Java, PHP, Rust, Ruby
-
-Процесс:
-1. ProjectAnalyzer анализирует проект (язык, версия, Dockerfile)
-2. FinalCIGenerator генерирует все stage'и
-3. Сохраняет .gitlab-ci.yml и Dockerfile (если его не было)
-"""
 
 import sys
 import os
+import argparse
 
-# Добавляем текущую директорию в путь для импортов
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from project_analyzer import ProjectAnalyzer
 from final_ci_generator import FinalCIGenerator
 
 
+def validate_flags(args, dockerfile_exists: bool):
+    """Валидирует комбинацию флагов"""
+
+    # Правило 1: docker-registry требует Docker
+    if args.sync == 'docker-registry':
+        if not dockerfile_exists and not args.docker_gen:
+            raise ValueError(
+                "❌ --sync docker-registry требует Dockerfile!\n"
+                "   Используйте --docker-gen=true для автогенерации"
+            )
+
+    # Правило 2: Если есть Dockerfile, нельзя nexus/artifactory
+    if dockerfile_exists and args.sync in ['nexus', 'artifactory']:
+        raise ValueError(
+            "❌ Конфликт: Dockerfile + --sync nexus/artifactory!\n"
+            "   Docker стратегия требует --sync docker-registry\n"
+            "   Удалите Dockerfile или используйте --sync docker-registry"
+        )
+
+    # Правило 3: docker-gen + nexus/artifactory = конфликт
+    if args.docker_gen and args.sync in ['nexus', 'artifactory']:
+        raise ValueError(
+            "❌ --docker-gen=true + --sync nexus/artifactory = конфликт!\n"
+            "   --docker-gen генерирует Dockerfile\n"
+            "   Используйте --sync docker-registry"
+        )
+
+    # Правило 4: server deploy требует docker-registry
+    if args.deploy == 'server' and args.sync != 'docker-registry':
+        raise ValueError(
+            "❌ --deploy server требует --sync docker-registry\n"
+            "   (server deploy работает только с Docker образами)"
+        )
+
+    # Правило 5: github deploy + docker-registry = несовместимо
+    if args.deploy == 'github' and args.sync == 'docker-registry':
+        raise ValueError(
+            "❌ --deploy github + --sync docker-registry = несовместимо!\n"
+            "   GitHub Releases для артефактов, не образов\n"
+            "   Используйте --sync nexus/artifactory/gitlab-artifacts"
+        )
+
+
+def detect_defaults(dockerfile_exists: bool) -> tuple:
+    """
+    Определяет дефолтные значения если флаги не переданы
+
+    Логика:
+    - Если Dockerfile есть → docker-registry + server
+    - Если Dockerfile нет → nexus + github
+
+    Returns:
+        (sync_target, deploy_target)
+    """
+    if dockerfile_exists:
+        return ('docker-registry', 'server')
+    else:
+        return ('nexus', 'github')
+
+
 def main():
+    parser = argparse.ArgumentParser(
+        description='Генератор GitLab CI/CD конфигов',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+ОПЦИОНАЛЬНЫЕ ФЛАГИ:
+
+  --sync={docker-registry|nexus|artifactory|gitlab-artifacts}
+    Где хранить артефакты сборки
+    (default: docker-registry если Dockerfile есть, иначе nexus)
+
+  --docker-gen={true|false}
+    Генерировать ли Dockerfile если его нет (default: false)
+
+  --deploy={server|github}
+    Что делать после сборки
+    (default: server если Dockerfile есть, иначе github)
+
+ПОДДЕРЖИВАЕМЫЕ ЯЗЫКИ:
+
+  • Java/Kotlin (pom.xml, build.gradle)
+  • Go (go.mod)
+  • TypeScript (tsconfig.json, package.json)
+  • Python (requirements.txt, setup.py)
+
+ПРИМЕРЫ:
+
+  # Без флагов: автоопределение
+  python main.py
+  # Если Dockerfile есть:   --sync docker-registry --deploy server
+  # Если Dockerfile нет:    --sync nexus --deploy github
+
+  # Явно Docker Registry + Server Deploy
+  python main.py --sync docker-registry --deploy server
+
+  # Docker с автогенерацией
+  python main.py --docker-gen=true --sync docker-registry --deploy server
+
+  # Явно Nexus + GitHub Releases
+  python main.py --sync nexus --deploy github
+
+  # GitLab Artifacts + GitHub Releases
+  python main.py --sync gitlab-artifacts --deploy github
+
+  # Только синхронизация (без deploy)
+  python main.py --sync nexus
+  python main.py --sync artifactory
+  python main.py --sync gitlab-artifacts
+        """
+    )
+
+    parser.add_argument('--sync',
+                        choices=['docker-registry', 'nexus', 'artifactory', 'gitlab-artifacts'],
+                        default=None,
+                        help='Где синхронизировать артефакты (опционально, автоопределение)')
+
+    parser.add_argument('--docker-gen',
+                        type=lambda x: x.lower() == 'true',
+                        default=False,
+                        help='Генерировать ли Dockerfile если его нет')
+
+    parser.add_argument('--deploy',
+                        choices=['server', 'github'],
+                        default=None,
+                        help='Что делать после сборки (опционально, автоопределение)')
+
+    args = parser.parse_args()
+
     print("\n" + "=" * 70)
     print("🚀 ГЕНЕРАТОР GITLAB CI/CD")
     print("=" * 70 + "\n")
 
     try:
-        # ===== ШАГ 1: АНАЛИЗ ПРОЕКТА =====
+        # Анализ проекта
         print("ШАГ 1: Анализ проекта")
         print("-" * 70)
 
-        analyzer = ProjectAnalyzer("..")
+        analyzer = ProjectAnalyzer(".", docker_gen=args.docker_gen)
         summary = analyzer.get_summary()
 
-        print(f"✅ Язык: {summary['language']}")
-        print(f"✅ Версия: {summary['version']}")
-        print(f"✅ Образ: {summary['base_image']}")
-        print(f"✅ Порт: {summary['port']}")
-        print(f"✅ Dockerfile: {'Найден' if summary['dockerfile_exists'] else 'Сгенерирован'}")
+        dockerfile_exists = summary['dockerfile_exists']
+        language = summary['language']
+
+        print(f"✅ Язык: {language}")
+        print(f"✅ Dockerfile: {'Найден ✅' if dockerfile_exists else 'Не найден ❌'}")
         print()
 
-        # ===== ШАГ 2: ГЕНЕРАЦИЯ CI/CD =====
-        print("ШАГ 2: Генерация CI/CD конфига")
+        # Автоопределение если флаги не переданы
+        print("ШАГ 2: Определение конфигурации")
         print("-" * 70)
 
-        generator = FinalCIGenerator(analyzer)
+        if args.sync is None or args.deploy is None:
+            print("🔍 Автоопределение параметров...")
+            default_sync, default_deploy = detect_defaults(dockerfile_exists)
+
+            if args.sync is None:
+                args.sync = default_sync
+                print(f"   → --sync: {args.sync} (автоопределение)")
+            else:
+                print(f"   → --sync: {args.sync} (явно указано)")
+
+            if args.deploy is None:
+                args.deploy = default_deploy
+                print(f"   → --deploy: {args.deploy} (автоопределение)")
+            else:
+                print(f"   → --deploy: {args.deploy} (явно указано)")
+        else:
+            print(f"✅ --sync: {args.sync} (явно указано)")
+            print(f"✅ --deploy: {args.deploy} (явно указано)")
+
+        print()
+
+        # Валидация
+        print("ШАГ 3: Валидация комбинации флагов")
+        print("-" * 70)
+
+        try:
+            validate_flags(args, dockerfile_exists)
+            print("✅ Комбинация флагов валидна\n")
+        except ValueError as e:
+            print(f"\n{e}\n")
+            sys.exit(1)
+
+        # Генерация
+        print("ШАГ 4: Генерация CI/CD")
+        print("-" * 70)
+
+        generator = FinalCIGenerator(analyzer, args.sync, args.deploy)
         generator.generate_all_stages()
 
-        # ===== ШАГ 3: СОХРАНЕНИЕ =====
-        print("ШАГ 3: Сохранение файлов")
+        # Сохранение
+        print("ШАГ 5: Сохранение")
         print("-" * 70)
-
         generator.save(".gitlab-ci.yml")
 
-        # ===== ШАГ 4: СВОДКА =====
-        print("ШАГ 4: Итоги")
+        # Итоги
+        print("ШАГ 6: Итоги")
         print("-" * 70)
-
         generator.print_summary()
 
-        # ===== ЗАВЕРШЕНИЕ =====
         print("\n" + "=" * 70)
         print("✅ ВСЁ ГОТОВО!")
-        print("=" * 70)
-
-        print("\n📋 Что было сделано:")
-        print("   ✅ Определён язык проекта")
-        print("   ✅ Определена версия языка")
-        if not summary['dockerfile_exists']:
-            print("   ✅ Сгенерирован Dockerfile")
-        print("   ✅ Сгенерирован Build stage")
-        print("   ✅ Сгенерирован Lint stage")
-        print("   ✅ Сгенерирован Security stage")
-        print("   ✅ Собран .gitlab-ci.yml")
-
-        print("\n📂 Файлы:")
-        if not summary['dockerfile_exists']:
-            print("   📄 Dockerfile (сгенерирован)")
-        print("   📄 .gitlab-ci.yml (сгенерирован)")
-
-        print("\n🎯 Дальнейшие шаги:")
-        print("   1. Проверьте .gitlab-ci.yml")
-        if not summary['dockerfile_exists']:
-            print("   2. Проверьте Dockerfile")
-        print("   3. Закоммитьте файлы:")
-        print("      git add .gitlab-ci.yml Dockerfile")
-        print("      git commit -m 'Auto-generated CI/CD config'")
-        print("      git push origin main")
-        print("   4. Смотрите CI/CD → Pipelines")
-        print("\n")
+        print("=" * 70 + "\n")
 
     except Exception as e:
         print(f"\n❌ ОШИБКА: {e}")

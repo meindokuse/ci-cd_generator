@@ -4,3 +4,4 @@ dist/
 venv/
 
 main.spec
+*.spec
