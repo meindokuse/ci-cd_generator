@@ -6,7 +6,6 @@ from lint_generator import LintStageGenerator
 from sonarqube_generator import SonarQubeStageGenerator
 from test_generator import TestStageGenerator
 from security_generator import SecurityStageGenerator
-from deploy_generator import DeployStageGenerator
 
 
 class FinalCIGenerator:
@@ -70,31 +69,29 @@ class FinalCIGenerator:
         self.stages['security'] = security_gen.get_output_string()
 
         # Deploy
-        if self.deploy_target:
-            print(f"  → Генерирую DEPLOY stage ({self.sync_target} → {self.deploy_target})...")
-            deploy_gen = DeployStageGenerator(self.config, self.sync_target, self.deploy_target)
-            self.stages['deploy'] = deploy_gen.get_output_string()
+        # if self.deploy_target:
+        #     print(f"  → Генерирую DEPLOY stage ({self.sync_target} → {self.deploy_target})...")
+        #     deploy_gen = DeployStageGenerator(self.config, self.sync_target, self.deploy_target)
+        #     self.stages['deploy'] = deploy_gen.get_output_string()
 
         print("\n✅ Все stage'и готовы\n")
 
     def assemble_config(self) -> str:
         """Собирает финальный .gitlab-ci.yml"""
 
-        config = """stages:
-  - build
-  - test
-  - lint
-  - security
+        # Формируем список stages
         stages_list = "  - build\n  - test\n  - lint\n  - sonarqube\n  - security\n  - integration"
         if self.deploy_target:
             stages_list += "\n  - deploy"
 
+        # Начинаем конфиг
         config = f"""stages:
 {stages_list}
 
 variables:
 """
 
+        # Переменные в зависимости от sync_target
         if self.sync_target == 'docker-registry':
             config += """  DOCKER_IMAGE_TAG: "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
   DOCKER_IMAGE_LATEST: "$CI_REGISTRY_IMAGE:latest"
@@ -109,6 +106,7 @@ variables:
 
         config += "\n"
 
+        # Добавляем все stage'и
         for stage_name, stage_content in self.stages.items():
             config += f"# ========== {stage_name.upper()} STAGE ==========\n"
             config += stage_content
