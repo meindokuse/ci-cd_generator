@@ -80,6 +80,11 @@ class FinalCIGenerator:
     def assemble_config(self) -> str:
         """Собирает финальный .gitlab-ci.yml"""
 
+        config = """stages:
+  - build
+  - test
+  - lint
+  - security
         stages_list = "  - build\n  - test\n  - lint\n  - sonarqube\n  - security\n  - integration"
         if self.deploy_target:
             stages_list += "\n  - deploy"
