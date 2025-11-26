@@ -1,46 +1,27 @@
 from test_analyzer import * 
 from jinja2 import Template
 
-def analyze():
-    base_directory = "." 
-    
-    print("🔍 Поиск всех проектов...")
-    projects = discover_projects(base_directory)
-    
-    print(f"📁 Найдено проектов: {len(projects)}")
-    for i, project in enumerate(projects, 1):
-        print(f"  {i}. {project['name']} ({project['language']}) - уверенность: {project['confidence']:.1f}")
-    
-    if projects:
-        print(f"\n🧪 Анализируем все проекты...")
-        results = analyze_all_projects(base_directory)
-        
-        for project_name, analysis in results.items():
-            print(f"\n🎯 Проект: {project_name}")
-            
-            if analysis.get("status") == "error":
-                print(f"   ❌ Ошибка: {analysis['error']}")
-                continue
-                
-            print(f"   🌐 Язык: {analysis['project_language']}")
-            print(f"   🧪 Тип тестов: {analysis['test_type_display']}")
-            print(f"   🚀 Команда: {analysis['base_command']}")
-
-    else:
-        print("❌ Проекты не найдены")
-
 
 class TestStageGenerator:
     TEST_TEMPLATE = '''test:
   stage: test
+  image: {{ image }}
+
   script:
     - {{ run_tests }}
+  {% if clean %}
   after_script:
-    {% if clean %}
     {% for cmd in clean %}
     - {{ cmd }}
     {% endfor %}
-    {% endif %}
+  {% endif %}
+  tags:
+    - docker
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - stuck_or_timeout_failure
   artifacts:
     paths:
       {% if artifacts %}
@@ -54,8 +35,9 @@ class TestStageGenerator:
         self.language = language
         self.base_image = base_image
 
-    def get_output_string(self, project_path: str, test_file: str, additional_args: str = "") -> str:
-        cmd = get_test_command_for_file(project_path, test_file, additional_args)
+    def get_output_string(self, test_file: str, additional_args: str = "") -> str:
+        base_directory = "."
+        cmd = get_test_command_for_file(base_directory, '')
 
         template = Template(self.TEST_TEMPLATE)
         yaml_output = template.render(
@@ -73,9 +55,7 @@ class TestStageGenerator:
 
         image = image.lower()
 
-        # --------------------------
-        # PYTHON (pytest, coverage)
-        # --------------------------
+
         if "python" in image:
             return [
                 "test-reports/",
