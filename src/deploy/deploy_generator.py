@@ -86,5 +86,5 @@ class DeployStageGenerator:
 
         return template.render(port=port, image_tag=image_tag)
 
-    def get_output_string(self) -> str:
+    def get_output_string(self)-> str:
         return self.generate()
