@@ -6,6 +6,7 @@ from project_analyzer import ProjectAnalyzer
 from build_generator import BuildStageGenerator
 from lint_generator import LintStageGenerator
 from security_generator import SecurityStageGenerator
+from deploy.deploy_generator import DeployStageGenerator
 
 
 class FinalCIGenerator:
@@ -49,6 +50,15 @@ class FinalCIGenerator:
             has_dockerfile=True
         )
         self.stages['security'] = security_gen.get_output_string()
+
+        # Deploy stage
+        print("  → Генерирую DEPLOY stage...")
+        # решаете в main.py, как узнавать, есть ли docker-compose.yml
+        # пока можно просто передать False (без compose),
+        # но лучше прокинуть флаг снаружи
+        deploy_gen = DeployStageGenerator(self.config, use_compose=False)
+        self.stages['deploy'] = deploy_gen.get_output_string()
+
 
         print("\n✅ Все stage'и готовы\n")
 
