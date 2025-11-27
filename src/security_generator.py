@@ -1,22 +1,31 @@
-# security_generator.py
+# src/security_generator.py
 
 from typing import Dict
 from jinja2 import Template
 
 
 class SecurityStageGenerator:
-    """Генератор security stage"""
+    """Генератор security stage с отладочным выводом"""
 
     SECURITY_TEMPLATES = {
         'python': """security:
   stage: security
   image: python:{{ version }}-slim
-  script:
+  before_script:
+    - echo "================================================"
+    - echo "SECURITY STAGE - Python {{ version }}"
+    - echo "================================================"
+    - echo "📦 Installing security tools: bandit, safety"
     - pip install --no-cache-dir -q bandit safety
-    - echo "Running: bandit"
+  script:
+    - echo ""
+    - echo "🔒 Running Bandit (security issue scanner)..."
     - bandit -r . -f txt -ll || true
-    - echo "Running: safety"
+    - echo ""
+    - echo "🔒 Running Safety (dependency vulnerability checker)..."
     - safety check --json || true
+    - echo ""
+    - echo "✅ Security scan completed!"
   allow_failure: true
   only:
     - main
@@ -28,25 +37,23 @@ class SecurityStageGenerator:
         'go': """security:
   stage: security
   image: golang:{{ version }}-alpine
-  script:
+  before_script:
+    - echo "================================================"
+    - echo "SECURITY STAGE - Go {{ version }}"
+    - echo "================================================"
+    - echo "📦 Installing gosec (security scanner)..."
     - go install github.com/securego/gosec/v2/cmd/gosec@latest
-    - echo "Running: gosec"
-    - $GOPATH/bin/gosec ./... || true
-  allow_failure: true
-  only:
-    - main
-    - merge_requests
-  tags:
-    - docker
-""",
-
-        'node': """security:
-  stage: security
-  image: node:{{ version }}-alpine
   script:
-    - npm install
-    - echo "Running: npm audit"
-    - npm audit --audit-level=moderate || true
+    - echo ""
+    - echo "🔒 Running gosec (Go security checker)..."
+    - $GOPATH/bin/gosec -fmt=json -out=gosec-report.json ./... || true
+    - $GOPATH/bin/gosec ./... || true
+    - echo ""
+    - echo "✅ Security scan completed!"
+  artifacts:
+    reports:
+      sast: gosec-report.json
+    expire_in: 1 week
   allow_failure: true
   only:
     - main
@@ -58,10 +65,25 @@ class SecurityStageGenerator:
         'typescript': """security:
   stage: security
   image: node:{{ version }}-alpine
+  before_script:
+    - echo "================================================"
+    - echo "SECURITY STAGE - TypeScript (Node {{ version }})"
+    - echo "================================================"
+    - echo "📦 Installing dependencies..."
+    - npm ci
   script:
-    - npm install
-    - echo "Running: npm audit"
+    - echo ""
+    - echo "🔒 Running npm audit (dependency vulnerabilities)..."
     - npm audit --audit-level=moderate || true
+    - echo ""
+    - echo "🔒 Generating npm audit report..."
+    - npm audit --json > npm-audit.json || true
+    - echo ""
+    - echo "✅ Security scan completed!"
+  artifacts:
+    paths:
+      - npm-audit.json
+    expire_in: 1 week
   allow_failure: true
   only:
     - main
@@ -73,9 +95,23 @@ class SecurityStageGenerator:
         'java': """security:
   stage: security
   image: maven:3.9-eclipse-temurin-{{ version }}
+  before_script:
+    - echo "================================================"
+    - echo "SECURITY STAGE - Java {{ version }}"
+    - echo "================================================"
   script:
-    - echo "Running: dependency-check"
+    - echo ""
+    - echo "🔒 Running OWASP Dependency-Check..."
     - mvn dependency-check:check || true
+    - echo ""
+    - echo "🔒 Checking for vulnerable dependencies..."
+    - mvn versions:display-dependency-updates || true
+    - echo ""
+    - echo "✅ Security scan completed!"
+  artifacts:
+    paths:
+      - target/dependency-check-report.html
+    expire_in: 1 week
   allow_failure: true
   only:
     - main
@@ -87,55 +123,23 @@ class SecurityStageGenerator:
         'kotlin': """security:
   stage: security
   image: maven:3.9-eclipse-temurin-{{ version }}
+  before_script:
+    - echo "================================================"
+    - echo "SECURITY STAGE - Kotlin (Java {{ version }})"
+    - echo "================================================"
   script:
-    - echo "Running: dependency-check"
+    - echo ""
+    - echo "🔒 Running OWASP Dependency-Check..."
     - mvn dependency-check:check || true
-  allow_failure: true
-  only:
-    - main
-    - merge_requests
-  tags:
-    - docker
-""",
-
-        'php': """security:
-  stage: security
-  image: php:{{ version }}-cli
-  script:
-    - curl -fsSL https://getcomposer.org/installer | php
-    - php composer.phar install
-    - echo "Running: composer audit"
-    - php composer.phar audit || true
-  allow_failure: true
-  only:
-    - main
-    - merge_requests
-  tags:
-    - docker
-""",
-
-        'rust': """security:
-  stage: security
-  image: rust:{{ version }}
-  script:
-    - cargo install cargo-audit
-    - echo "Running: cargo-audit"
-    - cargo-audit || true
-  allow_failure: true
-  only:
-    - main
-    - merge_requests
-  tags:
-    - docker
-""",
-
-        'ruby': """security:
-  stage: security
-  image: ruby:{{ version }}-alpine
-  script:
-    - gem install bundler-audit
-    - echo "Running: bundler-audit"
-    - bundler-audit check || true
+    - echo ""
+    - echo "🔒 Checking for vulnerable dependencies..."
+    - mvn versions:display-dependency-updates || true
+    - echo ""
+    - echo "✅ Security scan completed!"
+  artifacts:
+    paths:
+      - target/dependency-check-report.html
+    expire_in: 1 week
   allow_failure: true
   only:
     - main
@@ -145,29 +149,30 @@ class SecurityStageGenerator:
 """,
     }
 
-    DOCKER_SECURITY = """security_docker:
+    DOCKER_SECURITY = """
+security_docker:
   stage: security
   image: aquasec/trivy:latest
+  before_script:
+    - echo "================================================"
+    - echo "DOCKER IMAGE SECURITY SCAN"
+    - echo "================================================"
   script:
-    - echo "🔒 Scanning Docker image for vulnerabilities..."
-    - trivy image --exit-code 0 --severity HIGH,CRITICAL --no-progress $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA || true
-    - echo "✅ Docker security scan complete!"
+    - echo ""
+    - echo "🔒 Scanning Docker image with Trivy..."
+    - trivy image --exit-code 0 --severity HIGH,CRITICAL --format table $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+    - echo ""
+    - echo "🔒 Generating JSON report..."
+    - trivy image --exit-code 0 --severity HIGH,CRITICAL --format json --output trivy-report.json $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA || true
+    - echo ""
+    - echo "✅ Docker image scan completed!"
+  artifacts:
+    paths:
+      - trivy-report.json
+    expire_in: 1 week
   allow_failure: true
   only:
     - main
-  tags:
-    - docker
-"""
-
-    DEFAULT_TEMPLATE = """security:
-  stage: security
-  image: alpine:latest
-  script:
-    - echo "No security checks configured"
-  allow_failure: true
-  only:
-    - main
-    - merge_requests
   tags:
     - docker
 """
@@ -176,24 +181,25 @@ class SecurityStageGenerator:
         self.language = language
         self.version = version
         self.has_dockerfile = has_dockerfile
+        print(f"  → Генерирую SECURITY stage для {language}:{version}")
+        if has_dockerfile:
+            print(f"     ✅ Docker security scan включён")
 
     def generate(self) -> str:
         output = ""
 
         # Code security
-        template_str = self.SECURITY_TEMPLATES.get(self.language, self.DEFAULT_TEMPLATE)
+        template_str = self.SECURITY_TEMPLATES.get(self.language)
 
-        if '{{' in template_str:
+        if template_str:
             template = Template(template_str)
             output += template.render(version=self.version)
         else:
-            output += template_str
-
-        output += "\n"
+            print(f"     ⚠️  Нет security конфигурации для {self.language}")
 
         # Docker security (если есть Dockerfile)
         if self.has_dockerfile:
-            output += self.DOCKER_SECURITY
+            output += "\n" + self.DOCKER_SECURITY
 
         return output
 
