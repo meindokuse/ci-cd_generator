@@ -178,7 +178,7 @@ class DeployStageGenerator:
         {% endfor %}
       {% else %}
         app:
-          image: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+          image: $CI_REGISTRY_IMAGE:{{ artifact_name }}-$CI_COMMIT_SHA
           build: .
       {% endif %}
       EOF
@@ -235,7 +235,7 @@ class DeployStageGenerator:
         {% endfor %}
       {% else %}
         app:
-          image: $NEXUS_DOCKER_REGISTRY/$CI_PROJECT_NAME:$CI_COMMIT_SHA
+          image: $NEXUS_DOCKER_REGISTRY/{{ artifact_name }}:$CI_COMMIT_SHA
           build: .
       {% endif %}
       EOF
@@ -259,6 +259,7 @@ class DeployStageGenerator:
   when: manual
   tags:
     - docker
+
 """
 
     ARTIFACTORY_DOCKER_COMPOSE_TEMPLATE = """deploy_production:
@@ -292,7 +293,7 @@ class DeployStageGenerator:
         {% endfor %}
       {% else %}
         app:
-          image: $ARTIFACTORY_DOCKER_REGISTRY/$CI_PROJECT_NAME:$CI_COMMIT_SHA
+          image: $ARTIFACTORY_DOCKER_REGISTRY/{{ artifact_name }}:$CI_COMMIT_SHA
           build: .
       {% endif %}
       EOF
