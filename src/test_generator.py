@@ -35,7 +35,7 @@ class TestStageGenerator:
         self.language = language
         self.base_image = base_image
 
-    def get_output_string(self, test_file: str, additional_args: str = "") -> str:
+    def get_output_string(self) -> str:
         base_directory = "."
         cmd = get_test_command_for_file(base_directory, '')
 
@@ -47,7 +47,7 @@ class TestStageGenerator:
         )
         return yaml_output
 
-    def resolve_test_artifacts(image: str) -> List[str]:
+    def resolve_test_artifacts(self,image: str) -> List[str]:
         """
         Возвращает список путей, которые должны быть сохранены как артефакты.
         Основано на типичных путях тестовых тулов по языкам.
@@ -140,7 +140,7 @@ class TestStageGenerator:
             "coverage/",
         ]
 
-    def resolve_cleanup_commands(image: str) -> List[str]:
+    def resolve_cleanup_commands(self,image: str) -> List[str]:
         """
         Возвращает список shell-команд для блока after_script
         в зависимости от образа.
