@@ -5,16 +5,12 @@ from jinja2 import Template
 class TestStageGenerator:
     TEST_TEMPLATE = '''test:
   stage: test
-  image: {{ image }}
-
+  image: {{ img }}
   script:
     - {{ run_tests }}
-  {% if clean %}
-  after_script:
-    {% for cmd in clean %}
-    - {{ cmd }}
-    {% endfor %}
-  {% endif %}
+{% if clean %}  after_script:
+{% for cmd in clean %}
+    - {{ cmd }}{% endfor %}{% endif %}
   tags:
     - docker
   retry:
@@ -24,28 +20,27 @@ class TestStageGenerator:
       - stuck_or_timeout_failure
   artifacts:
     paths:
-      {% if artifacts %}
-      {% for cmd in artifacts %}
-      - {{ cmd }}
-      {% endfor %}
-      {% endif %}
+{% if artifacts %}{% for cmd in artifacts %}
+      - {{ cmd }}{% endfor %}{% endif %}
     expire_in: 1 week
 '''
-    def __init__(self, language: str, base_image: str):
+    def __init__(self, language: str, version: str, dockerfile_info: dict):
         self.language = language
-        self.base_image = base_image
+        self.version = version
+        self.dockerfile_info = dockerfile_info
         self.base_directory = "."
 
 
     def get_output_string(self) -> str:
-
         cmd = get_test_command_for_file(self.base_directory, '')
 
+        base_img = self.dockerfile_info['base_images']
         template = Template(self.TEST_TEMPLATE)
         yaml_output = template.render(
+            img=f"{base_img[0].split(':')[0]}:{self.version}-{base_img[1]}",
             run_tests=cmd,
-            artifacts=self.resolve_test_artifacts(self.base_image),
-            clean=self.resolve_cleanup_commands(self.base_image)
+            artifacts=self.resolve_test_artifacts(''.join(base_img)),
+            clean=self.resolve_cleanup_commands(''.join(base_img))
         )
         return yaml_output
 
@@ -57,7 +52,6 @@ class TestStageGenerator:
         """
 
         image = image.lower()
-
 
         if "python" in image:
             return [
@@ -202,7 +196,7 @@ class TestStageGenerator:
         # --------------------------
         # GO
         # --------------------------
-        if "golang" in img or "go:" in img:
+        if "golang" in img or "go:" in img or "go" in img:
             return [
                 "rm -f coverage.out || true",
                 "rm -rf test-reports || true",
