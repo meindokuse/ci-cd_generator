@@ -60,8 +60,7 @@ class SonarQubeStageGenerator:
       echo ""
 
       # Получаем основные метрики
-      METRICS=$(curl -s -u $SONAR_TOKEN: \
-        "$SONAR_HOST_URL/api/measures/component?component=$CI_PROJECT_NAME&metricKeys=ncloc,files,functions,classes,complexity,vulnerabilities,bugs,code_smells,coverage,duplicated_lines_density")
+      METRICS=$(curl -s -u $SONAR_TOKEN: "$SONAR_HOST_URL/api/measures/component?component=$CI_PROJECT_NAME&metricKeys=ncloc,files,functions,classes,complexity,vulnerabilities,bugs,code_smells,coverage,duplicated_lines_density")
 
       # Парсим и выводим
       NCLOC=$(echo $METRICS | jq -r '.component.measures[] | select(.metric=="ncloc") | .value')
@@ -97,10 +96,9 @@ class SonarQubeStageGenerator:
     # Получаем список языков проекта
     - |
       echo "💻 DETECTED LANGUAGES:"
-      LANGUAGES=$(curl -s -u $SONAR_TOKEN: \
-        "$SONAR_HOST_URL/api/measures/component?component=$CI_PROJECT_NAME&metricKeys=ncloc_language_distribution")
+      LANGUAGES=$(curl -s -u $SONAR_TOKEN: "$SONAR_HOST_URL/api/measures/component?component=$CI_PROJECT_NAME&metricKeys=ncloc_language_distribution")
 
-      echo $LANGUAGES | jq -r '.component.measures[] | select(.metric=="ncloc_language_distribution") | .value' | tr ';' '\n' | while read line; do
+      echo $LANGUAGES | jq -r '.component.measures[] | select(.metric=="ncloc_language_distribution") | .value' | tr ';' '\\n' | while read line; do
         echo "   • $line"
       done
       echo ""
@@ -108,10 +106,9 @@ class SonarQubeStageGenerator:
     # Получаем список issues (реальные проблемы)
     - |
       echo "🔒 SECURITY & QUALITY ISSUES:"
-      ISSUES=$(curl -s -u $SONAR_TOKEN: \
-        "$SONAR_HOST_URL/api/issues/search?componentKeys=$CI_PROJECT_NAME&ps=5&types=VULNERABILITY,BUG&severities=CRITICAL,MAJOR")
+      ISSUES=$(curl -s -u $SONAR_TOKEN: "$SONAR_HOST_URL/api/issues/search?componentKeys=$CI_PROJECT_NAME&ps=5&types=VULNERABILITY,BUG&severities=CRITICAL,MAJOR")
 
-      echo $ISSUES | jq -r '.issues[] | "   • [\(.severity)] \(.message) (\(.component | split(":")[1]):\(.line))"' | head -10
+      echo $ISSUES | jq -r '.issues[] | "   • [\\(.severity)] \\(.message) (\\(.component | split(\\":\\")[1]):\\(.line))"' | head -10
       echo ""
 
     # Ссылка на полный отчет
