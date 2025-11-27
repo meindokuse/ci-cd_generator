@@ -7,6 +7,8 @@ import re
 from typing import Dict, List
 from jinja2 import Template
 
+from src.env_analyzer import EnvAnalyzer
+
 
 class ProjectAnalyzer:
     """Анализ проекта с определением стратегии сборки"""
@@ -321,6 +323,10 @@ CMD ["rails", "server", "-b", "0.0.0.0", "-p", "3000"]
         # 9. Определяем артефакты
         self.data['artifact_paths'] = self._detect_artifact_paths(language)
 
+        # ========== 10. НОВОЕ: Анализируем переменные окружения ==========
+        self.env_analyzer = EnvAnalyzer(self.project_path)
+        self.data['env_summary'] = self.env_analyzer.get_summary()
+
         # ============ РАСШИРЕННЫЙ ВЫВОД ============
         print(f"\n{'=' * 70}")
         print("📋 АНАЛИЗ ПРОЕКТА")
@@ -338,7 +344,7 @@ CMD ["rails", "server", "-b", "0.0.0.0", "-p", "3000"]
         if self.data.get('dependencies'):
             deps_count = len(self.data['dependencies'])
             print(f"✅ Основные зависимости ({deps_count}):")
-            for dep in self.data['dependencies'][:5]:  # Топ 5
+            for dep in self.data['dependencies'][:5]:
                 print(f"   → {dep}")
             if deps_count > 5:
                 print(f"   ... и ещё {deps_count - 5}")

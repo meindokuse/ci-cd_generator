@@ -1,247 +1,152 @@
-#!/usr/bin/env python3
+# src/main.py
 
-import sys
 import os
+import sys
 import argparse
-import subprocess
 import tempfile
 import shutil
-from pathlib import Path
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
+from git import Repo
 from project_analyzer import ProjectAnalyzer
 from final_ci_generator import FinalCIGenerator
 
 
-def clone_repository(git_url: str, target_dir: str) -> bool:
-    """Клонирует git репозиторий"""
-    try:
-        print(f"📥 Клонирую репозиторий: {git_url}")
-        subprocess.run(
-            ['git', 'clone', '--depth', '1', git_url, target_dir],
-            check=True,
-            capture_output=True,
-            text=True
-        )
-        print(f"✅ Репозиторий склонирован в {target_dir}\n")
-        return True
-    except subprocess.CalledProcessError as e:
-        print(f"❌ Ошибка клонирования: {e.stderr}")
-        return False
-    except FileNotFoundError:
-        print("❌ Git не установлен!")
-        return False
-
-
-def validate_flags(args, dockerfile_exists: bool):
-    """Валидирует комбинацию флагов"""
-
-    # Правило 1: docker-registry требует Docker
-    if args.sync == 'docker-registry':
-        if not dockerfile_exists and not args.docker_gen:
-            raise ValueError(
-                "❌ --sync docker-registry требует Dockerfile!\n"
-                "   Используйте --docker-gen=true для автогенерации"
-            )
-
-    # Правило 2: Если есть Dockerfile, нельзя nexus/artifactory
-    if dockerfile_exists and args.sync in ['nexus', 'artifactory']:
-        raise ValueError(
-            "❌ Конфликт: Dockerfile + --sync nexus/artifactory!\n"
-            "   Docker стратегия требует --sync docker-registry\n"
-            "   Удалите Dockerfile или используйте --sync docker-registry"
-        )
-
-    # Правило 3: docker-gen + nexus/artifactory = конфликт
-    if args.docker_gen and args.sync in ['nexus', 'artifactory']:
-        raise ValueError(
-            "❌ --docker-gen=true + --sync nexus/artifactory = конфликт!\n"
-            "   --docker-gen генерирует Dockerfile\n"
-            "   Используйте --sync docker-registry"
-        )
-
-    # Правило 4: server deploy требует docker-registry
-    if args.deploy == 'server' and args.sync != 'docker-registry':
-        raise ValueError(
-            "❌ --deploy server требует --sync docker-registry\n"
-            "   (server deploy работает только с Docker образами)"
-        )
-
-    # Правило 5: github deploy + docker-registry = несовместимо
-    if args.deploy == 'github' and args.sync == 'docker-registry':
-        raise ValueError(
-            "❌ --deploy github + --sync docker-registry = несовместимо!\n"
-            "   GitHub Releases для артефактов, не образов\n"
-            "   Используйте --sync nexus/artifactory/gitlab-artifacts"
-        )
-
-
-def detect_defaults(dockerfile_exists: bool) -> tuple:
-    """Определяет дефолтные значения"""
-    if dockerfile_exists:
-        return ('docker-registry', 'server')
-    else:
-        return ('nexus', 'github')
-
-
 def main():
-    parser = argparse.ArgumentParser(
-        description='Генератор GitLab CI/CD конфигов',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-ПРИМЕРЫ:
-
-  # Локальный проект (текущая директория)
-  python main.py
-
-  # Git репозиторий
-  python main.py --repo https://gitlab.com/myuser/myproject.git
-
-  # С флагами
-  python main.py --repo https://gitlab.com/myuser/myproject.git --sync docker-registry --deploy server
-
-  # Автогенерация Dockerfile
-  python main.py --repo https://gitlab.com/myuser/myproject.git --docker-gen=true
-        """
-    )
-
-    parser.add_argument('--repo',
-                        type=str,
-                        default=None,
-                        help='URL Git репозитория (опционально, по умолчанию текущая директория)')
-
-    parser.add_argument('--sync',
-                        choices=['docker-registry', 'nexus', 'artifactory', 'gitlab-artifacts'],
-                        default=None,
-                        help='Где синхронизировать артефакты')
-
-    parser.add_argument('--docker-gen',
-                        type=lambda x: x.lower() == 'true',
-                        default=False,
-                        help='Генерировать ли Dockerfile')
-
-    parser.add_argument('--deploy',
-                        choices=['server', 'github'],
-                        default=None,
-                        help='Что делать после сборки')
-
-    parser.add_argument('--output',
-                        type=str,
-                        default='.gitlab-ci.yml',
-                        help='Путь к выходному файлу (default: .gitlab-ci.yml)')
+    parser = argparse.ArgumentParser(description='GitLab CI/CD Generator')
+    parser.add_argument('--repo', help='Git repository URL or local path')
+    parser.add_argument('--sync', default='docker-registry',
+                        choices=['docker-registry', 'nexus', 's3', 'artifactory', 'gitlab-artifacts'],
+                        help='Artifact sync target')
+    parser.add_argument('--deploy', default='server',
+                        choices=['server', 'k8s', 'github'],
+                        help='Deployment target')
+    parser.add_argument('--docker-gen', action='store_true',
+                        help='Generate Dockerfile if missing')
+    parser.add_argument('--output', default='/output',
+                        help='Output directory')
 
     args = parser.parse_args()
 
-    print("\n" + "=" * 70)
+    print("=" * 70)
     print("🚀 ГЕНЕРАТОР GITLAB CI/CD")
-    print("=" * 70 + "\n")
+    print("=" * 70)
 
-    temp_dir = None
-    project_path = "."
+    # Шаг 0: Клонирование репозитория (если URL)
+    if args.repo and (args.repo.startswith('http') or args.repo.startswith('git@')):
+        print("\nШАГ 0: Клонирование репозитория")
+        print("-" * 70)
+        print(f"📥 Клонирую репозиторий: {args.repo}")
+
+        temp_dir = tempfile.mkdtemp(prefix='cicd_gen_')
+        try:
+            Repo.clone_from(args.repo, temp_dir)
+            print(f"✅ Репозиторий склонирован в {temp_dir}")
+            project_path = temp_dir
+        except Exception as e:
+            print(f"❌ Ошибка клонирования: {e}")
+            sys.exit(1)
+    elif args.repo:
+        project_path = args.repo
+    else:
+        project_path = "."
+
+    # Шаг 1: Анализ проекта
+    print("\nШАГ 1: Анализ проекта")
+    print("-" * 70)
 
     try:
-        # Если передан --repo, клонируем во временную директорию
-        if args.repo:
-            temp_dir = tempfile.mkdtemp(prefix='cicd_gen_')
-            project_path = temp_dir
-
-            print("ШАГ 0: Клонирование репозитория")
-            print("-" * 70)
-            if not clone_repository(args.repo, project_path):
-                sys.exit(1)
-
-        # Анализ проекта
-        print("ШАГ 1: Анализ проекта")
-        print("-" * 70)
-
         analyzer = ProjectAnalyzer(project_path, docker_gen=args.docker_gen)
         summary = analyzer.get_summary()
 
-        dockerfile_exists = summary['dockerfile_exists']
-        language = summary['language']
-
-        print(f"✅ Язык: {language}")
-        print(f"✅ Dockerfile: {'Найден ✅' if dockerfile_exists else 'Не найден ❌'}")
-        print()
-
-        # Автоопределение
-        print("ШАГ 2: Определение конфигурации")
-        print("-" * 70)
-
-        if args.sync is None or args.deploy is None:
-            print("🔍 Автоопределение параметров...")
-            default_sync, default_deploy = detect_defaults(dockerfile_exists)
-
-            if args.sync is None:
-                args.sync = default_sync
-                print(f"   → --sync: {args.sync} (автоопределение)")
-            else:
-                print(f"   → --sync: {args.sync} (явно указано)")
-
-            if args.deploy is None:
-                args.deploy = default_deploy
-                print(f"   → --deploy: {args.deploy} (автоопределение)")
-            else:
-                print(f"   → --deploy: {args.deploy} (явно указано)")
-        else:
-            print(f"✅ --sync: {args.sync}")
-            print(f"✅ --deploy: {args.deploy}")
-
-        print()
-
-        # Валидация
-        print("ШАГ 3: Валидация")
-        print("-" * 70)
-
-        try:
-            validate_flags(args, dockerfile_exists)
-            print("✅ Валидация пройдена\n")
-        except ValueError as e:
-            print(f"\n{e}\n")
-            sys.exit(1)
-
-        # Генерация
-        print("ШАГ 4: Генерация CI/CD")
-        print("-" * 70)
-
-        generator = FinalCIGenerator(analyzer, args.sync, args.deploy)
-        generator.generate_all_stages()
-
-        # Сохранение
-        print("ШАГ 5: Сохранение")
-        print("-" * 70)
-
-        # Если работали с временной директорией, сохраняем в текущую
-        if temp_dir:
-            output_path = args.output
-        else:
-            output_path = os.path.join(project_path, args.output)
-
-        generator.save(output_path)
-
-        # Итоги
-        print("ШАГ 6: Итоги")
-        print("-" * 70)
-        generator.print_summary()
-
-        print("\n" + "=" * 70)
-        print("✅ ВСЁ ГОТОВО!")
-        print(f"📁 Результат: {output_path}")
-        print("=" * 70 + "\n")
+        print(f"\n✅ Язык: {summary['language']}")
+        print(f"✅ Dockerfile: {'Найден ✅' if summary['dockerfile_exists'] else 'Не найден ❌'}")
 
     except Exception as e:
-        print(f"\n❌ ОШИБКА: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"\n❌ Ошибка анализа: {e}")
         sys.exit(1)
 
-    finally:
-        # Очищаем временную директорию
-        if temp_dir and os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir)
-            print(f"🧹 Временная директория удалена: {temp_dir}")
+    # Шаг 2: Определение конфигурации
+    print("\nШАГ 2: Определение конфигурации")
+    print("-" * 70)
+    print(f"✅ --sync: {args.sync}")
+    print(f"✅ --deploy: {args.deploy}")
+
+    # Шаг 3: Валидация
+    print("\nШАГ 3: Валидация")
+    print("-" * 70)
+
+    if not summary['dockerfile_exists']:
+        print("❌ Dockerfile не найден!")
+        if not args.docker_gen:
+            print("   💡 Используйте --docker-gen для автоматической генерации")
+            sys.exit(1)
+
+    print("✅ Валидация пройдена")
+
+    # Шаг 4: Генерация CI/CD
+    print("\nШАГ 4: Генерация CI/CD")
+    print("-" * 70)
+
+    generator = FinalCIGenerator(analyzer, args.sync, args.deploy)
+    generator.generate_all_stages()
+
+    # Шаг 5: Сохранение
+    print("\nШАГ 5: Сохранение")
+    print("-" * 70)
+
+    output_dir = args.output
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Сохраняем .gitlab-ci.yml
+    output_path = os.path.join(output_dir, '.gitlab-ci.yml')
+    generator.save(output_path)
+
+    # ========== НОВОЕ: Генерируем документацию по переменным ==========
+    if hasattr(analyzer, 'env_analyzer') and analyzer.env_analyzer.env_vars:
+        # GITLAB_VARIABLES.md
+        vars_doc = analyzer.env_analyzer.generate_gitlab_variables_documentation()
+        vars_doc_path = os.path.join(output_dir, 'GITLAB_VARIABLES.md')
+
+        with open(vars_doc_path, 'w', encoding='utf-8') as f:
+            f.write(vars_doc)
+
+        print(f"✅ Документация по переменным: {vars_doc_path}")
+
+        # .env.example
+        env_example = analyzer.env_analyzer.generate_env_example()
+        env_example_path = os.path.join(output_dir, '.env.example')
+
+        with open(env_example_path, 'w', encoding='utf-8') as f:
+            f.write(env_example)
+
+        print(f"✅ Шаблон переменных: {env_example_path}")
+
+    # Шаг 6: Итоги
+    print("\nШАГ 6: Итоги")
+    print("-" * 70)
+
+    generator.print_summary()
+
+    print()
+    print("=" * 70)
+    print("✅ ВСЁ ГОТОВО!")
+    print(f"📁 Результат: {output_path}")
+
+    # ========== НОВОЕ: Вывод дополнительных файлов ==========
+    if hasattr(analyzer, 'env_analyzer') and analyzer.env_analyzer.env_vars:
+        print(f"📁 Документация переменных: {vars_doc_path}")
+        print(f"📁 Шаблон .env: {env_example_path}")
+        print()
+        print("💡 Не забудьте:")
+        print("   1. Добавить переменные в GitLab CI/CD (см. GITLAB_VARIABLES.md)")
+        print("   2. Скопировать .env.example → .env для локальной разработки")
+
+    print("=" * 70)
+
+    # Очистка временной директории
+    if args.repo and (args.repo.startswith('http') or args.repo.startswith('git@')):
+        shutil.rmtree(temp_dir)
+        print(f"\n🧹 Временная директория удалена: {temp_dir}")
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
