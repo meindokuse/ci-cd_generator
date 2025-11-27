@@ -4,21 +4,13 @@ import os
 import glob
 import json
 import re
-from pathlib import Path
-from typing import Dict, Optional, List
+from typing import Dict, List
 from jinja2 import Template
 
 
 class ProjectAnalyzer:
-    """
-    Единый класс для анализа проекта:
-    - Определение языка
-    - Определение версии
-    - Генерация/парсинг Dockerfile
-    - Все данные хранятся в одном месте
-    """
+    """Анализ проекта с определением стратегии сборки"""
 
-    # Приоритеты определения языков
     LANGUAGE_MARKERS = {
         'python': {
             'high': ['requirements.txt', 'setup.py', 'pyproject.toml', 'Pipfile'],
@@ -30,11 +22,19 @@ class ProjectAnalyzer:
         },
         'node': {
             'high': ['package.json'],
-            'medium': ['*.js', '*.ts']
+            'medium': ['*.js', '*.ts', '*.tsx']
+        },
+        'typescript': {
+            'high': ['tsconfig.json'],
+            'medium': ['*.ts', '*.tsx']
         },
         'java': {
             'high': ['pom.xml', 'build.gradle'],
             'medium': ['*.java']
+        },
+        'kotlin': {
+            'high': ['pom.xml', 'build.gradle', 'build.gradle.kts'],
+            'medium': ['*.kt']
         },
         'php': {
             'high': ['composer.json'],
@@ -50,7 +50,6 @@ class ProjectAnalyzer:
         },
     }
 
-    # Шаблоны Dockerfile для каждого языка
     DOCKERFILE_TEMPLATES = {
         'python': """FROM python:{{ version }}-slim as builder
 WORKDIR /app
@@ -62,9 +61,9 @@ RUN useradd -m -u 1000 appuser
 WORKDIR /app
 COPY --from=builder /usr/local/lib/python{{ version_short }}/site-packages /usr/local/lib/python{{ version_short }}/site-packages
 COPY --chown=appuser:appuser . .
-EXPOSE {{ port }}
+EXPOSE 3000
 USER appuser
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 CMD python -c "import http.client; http.client.HTTPConnection('127.0.0.1', {{ port }}).request('GET', '/'); exit(0)"
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 CMD python -c "import http.client; http.client.HTTPConnection('127.0.0.1', 3000).request('GET', '/'); exit(0)"
 CMD ["python", "-m", "main"]
 """,
 
@@ -80,9 +79,9 @@ RUN apk --no-cache add ca-certificates
 RUN adduser -D -u 1000 appuser
 WORKDIR /home/appuser
 COPY --from=builder --chown=appuser:appuser /app/app .
-EXPOSE {{ port }}
+EXPOSE 3000
 USER appuser
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 CMD wget --no-verbose --tries=1 --spider http://localhost:{{ port }}/health || exit 1
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 CMD wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1
 CMD ["./app"]
 """,
 
@@ -96,9 +95,27 @@ RUN adduser -D -u 1000 appuser
 WORKDIR /app
 COPY --from=builder --chown=appuser:appuser /app/node_modules ./node_modules
 COPY --chown=appuser:appuser . .
-EXPOSE {{ port }}
+EXPOSE 3000
 USER appuser
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 CMD wget --no-verbose --tries=1 --spider http://localhost:{{ port }}/health || exit 1
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 CMD wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1
+CMD ["npm", "start"]
+""",
+
+        'typescript': """FROM node:{{ version }}-alpine as builder
+WORKDIR /app
+COPY package*.json tsconfig.json ./
+RUN npm ci
+RUN npm run build
+
+FROM node:{{ version }}-alpine
+RUN adduser -D -u 1000 appuser
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --only=production
+COPY --from=builder --chown=appuser:appuser /app/dist ./dist
+EXPOSE 3000
+USER appuser
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 CMD wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1
 CMD ["npm", "start"]
 """,
 
@@ -113,25 +130,42 @@ FROM eclipse-temurin:{{ version }}-jre-alpine
 RUN adduser -D -u 1000 appuser
 WORKDIR /app
 COPY --from=builder --chown=appuser:appuser /app/target/*.jar app.jar
-EXPOSE {{ port }}
+EXPOSE 3000
 USER appuser
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 CMD wget --no-verbose --tries=1 --spider http://localhost:{{ port }}/actuator/health || exit 1
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 CMD wget --no-verbose --tries=1 --spider http://localhost:3000/actuator/health || exit 1
+CMD ["java", "-jar", "app.jar"]
+""",
+
+        'kotlin': """FROM maven:3.9-eclipse-temurin-{{ version }} as builder
+WORKDIR /app
+COPY pom.xml .
+RUN mvn dependency:go-offline
+COPY . .
+RUN mvn clean package -DskipTests
+
+FROM eclipse-temurin:{{ version }}-jre-alpine
+RUN adduser -D -u 1000 appuser
+WORKDIR /app
+COPY --from=builder --chown=appuser:appuser /app/target/*.jar app.jar
+EXPOSE 3000
+USER appuser
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 CMD wget --no-verbose --tries=1 --spider http://localhost:3000/actuator/health || exit 1
 CMD ["java", "-jar", "app.jar"]
 """,
 
         'php': """FROM php:{{ version }}-fpm-alpine
 WORKDIR /app
 COPY composer.json composer.lock ./
-RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer && \\
+RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer && \
     composer install --no-interaction --no-dev
 
 FROM php:{{ version }}-fpm-alpine
 RUN adduser -D -u 1000 appuser
 WORKDIR /app
 COPY --from=0 --chown=appuser:appuser /app ./
-EXPOSE {{ port }}
+EXPOSE 3000
 USER appuser
-CMD ["php", "-S", "0.0.0.0:{{ port }}"]
+CMD ["php", "-S", "0.0.0.0:3000"]
 """,
 
         'rust': """FROM rust:{{ version }} as builder
@@ -145,9 +179,9 @@ RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/
 RUN useradd -m -u 1000 appuser
 WORKDIR /app
 COPY --from=builder --chown=appuser:appuser /app/target/release/app .
-EXPOSE {{ port }}
+EXPOSE 3000
 USER appuser
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 CMD curl -f http://localhost:{{ port }}/health || exit 1
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 CMD curl -f http://localhost:3000/health || exit 1
 CMD ["./app"]
 """,
 
@@ -158,15 +192,21 @@ RUN gem install bundler && bundle install
 
 RUN adduser -D -u 1000 appuser
 COPY --chown=appuser:appuser . .
-EXPOSE {{ port }}
+EXPOSE 3000
 USER appuser
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 CMD wget --no-verbose --tries=1 --spider http://localhost:{{ port }}/ || exit 1
-CMD ["rails", "server", "-b", "0.0.0.0", "-p", "{{ port }}"]
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 CMD wget --no-verbose --tries=1 --spider http://localhost:3000/ || exit 1
+CMD ["rails", "server", "-b", "0.0.0.0", "-p", "3000"]
 """,
     }
 
-    def __init__(self, project_path: str = "."):
+    def __init__(self, project_path: str = ".", docker_gen: bool = False):
+        """
+        Args:
+            project_path: Путь к проекту
+            docker_gen: Генерировать ли Dockerfile если его нет
+        """
         self.project_path = project_path
+        self.docker_gen = docker_gen
         self.data = {}
         self._analyze()
 
@@ -184,25 +224,138 @@ CMD ["rails", "server", "-b", "0.0.0.0", "-p", "{{ port }}"]
         # 2. Определяем версию
         self.data['version'] = self._detect_version(language)
 
-        # 3. Проверяем/генерируем Dockerfile
+        # 3. Проверяем Dockerfile
         self.data['dockerfile_exists'] = os.path.exists(
             os.path.join(self.project_path, "Dockerfile")
         )
 
+        # 4. Проверяем docker-compose.yml
+        self.data['docker_compose_exists'] = self._check_docker_compose()
+
+        if self.data['docker_compose_exists']:
+            self.data['docker_compose_info'] = self._parse_docker_compose()
+
+            # Определяем: monorepo или нет
+            services_with_build = self._extract_services_with_build()
+
+            if len(services_with_build) > 1:
+                self.data['is_monorepo'] = True
+                self.data['services'] = services_with_build
+                print(f"✅ Обнаружен Monorepo ({len(services_with_build)} сервисов)")
+                for svc in services_with_build:
+                    print(f"   → {svc['name']} ({svc['path']})")
+            else:
+                self.data['is_monorepo'] = False
+                self.data['services'] = []
+        else:
+            self.data['is_monorepo'] = False
+            self.data['services'] = []
+
+        # 5. Генерируем Dockerfile если нужно
+        if not self.data['dockerfile_exists'] and self.docker_gen:
+            print(f"   🔨 Генерирую Dockerfile для {language}:{self.data['version']}...")
+            self._generate_dockerfile(language)
+            self.data['dockerfile_exists'] = True
+
+        # 6. Определяем базовый образ
         if self.data['dockerfile_exists']:
             self.data['dockerfile_info'] = self._parse_dockerfile()
+            self.data['base_image'] = self.data['dockerfile_info']['final_image']
         else:
-            self.data['dockerfile_info'] = self._generate_dockerfile(language)
+            self.data['dockerfile_info'] = None
+            self.data['base_image'] = self._get_build_image(language)
 
-        # 4. Определяем порт
-        self.data['port'] = self.data['dockerfile_info'].get('primary_port', 3000)
+        # 7. Определяем артефакты
+        self.data['artifact_paths'] = self._detect_artifact_paths(language)
 
-        # 5. Извлекаем базовый образ
-        self.data['base_image'] = self.data['dockerfile_info']['final_image']
-
+        print(f"✅ Язык: {language}")
+        print(f"✅ Версия: {self.data['version']}")
+        print(f"✅ Dockerfile: {'Найден ✅' if self.data['dockerfile_exists'] else 'Не найден ❌'}")
+        print(f"✅ docker-compose.yml: {'Найден ✅' if self.data['docker_compose_exists'] else 'Не найден ❌'}")
+        if self.data.get('is_monorepo'):
+            print(f"✅ Тип проекта: Monorepo ({len(self.data['services'])} сервисов)")
         print("✅ Анализ завершён\n")
 
-    # ===== ОПРЕДЕЛЕНИЕ ЯЗЫКА =====
+    def _get_build_image(self, language: str) -> str:
+        """Возвращает образ для сборки артефактов"""
+        images = {
+            'python': f"python:{self.data['version']}-slim",
+            'go': f"golang:{self.data['version']}-alpine",
+            'node': f"node:{self.data['version']}-alpine",
+            'typescript': f"node:{self.data['version']}-alpine",
+            'java': f"maven:3.9-eclipse-temurin-{self.data['version']}",
+            'kotlin': f"maven:3.9-eclipse-temurin-{self.data['version']}",
+            'php': f"php:{self.data['version']}-cli",
+            'rust': f"rust:{self.data['version']}",
+            'ruby': f"ruby:{self.data['version']}-alpine",
+        }
+        return images.get(language, 'alpine:latest')
+
+    def _detect_artifact_paths(self, language: str) -> Dict:
+        """Определяет пути к артефактам"""
+        paths = {
+            'python': {
+                'build_command': 'python setup.py bdist_wheel',
+                'artifact_path': 'dist/*.whl',
+                'artifact_name': '*.whl',
+                'artifact_type': 'wheel'
+            },
+            'go': {
+                'build_command': 'go build -o app .',
+                'artifact_path': 'app',
+                'artifact_name': 'app',
+                'artifact_type': 'binary'
+            },
+            'node': {
+                'build_command': 'npm run build && npm pack',
+                'artifact_path': '*.tgz',
+                'artifact_name': '*.tgz',
+                'artifact_type': 'npm'
+            },
+            'typescript': {
+                'build_command': 'npm run build && npm pack',
+                'artifact_path': '*.tgz',
+                'artifact_name': '*.tgz',
+                'artifact_type': 'npm'
+            },
+            'java': {
+                'build_command': 'mvn clean package',
+                'artifact_path': 'target/*.jar',
+                'artifact_name': '*.jar',
+                'artifact_type': 'jar'
+            },
+            'kotlin': {
+                'build_command': 'mvn clean package',
+                'artifact_path': 'target/*.jar',
+                'artifact_name': '*.jar',
+                'artifact_type': 'jar'
+            },
+            'php': {
+                'build_command': 'composer install --no-dev',
+                'artifact_path': 'vendor/',
+                'artifact_name': 'vendor',
+                'artifact_type': 'composer'
+            },
+            'rust': {
+                'build_command': 'cargo build --release',
+                'artifact_path': 'target/release/app',
+                'artifact_name': 'app',
+                'artifact_type': 'binary'
+            },
+            'ruby': {
+                'build_command': 'gem build *.gemspec',
+                'artifact_path': '*.gem',
+                'artifact_name': '*.gem',
+                'artifact_type': 'gem'
+            },
+        }
+
+        return paths.get(language, {
+            'build_command': 'echo "No build command"',
+            'artifact_path': '*',
+            'artifact_name': '*',
+            'artifact_type': 'unknown'
+        })
 
     def _detect_language(self) -> Dict:
         """Определяет язык проекта"""
@@ -210,13 +363,11 @@ CMD ["rails", "server", "-b", "0.0.0.0", "-p", "{{ port }}"]
         detections = {}
 
         for language, markers in self.LANGUAGE_MARKERS.items():
-            # Проверяем high priority
             for marker in markers['high']:
                 if self._file_exists(marker):
                     detections[language] = ('high', marker)
                     break
 
-            # Если не нашли high, проверяем medium
             if language not in detections:
                 for marker in markers['medium']:
                     if self._file_exists(marker):
@@ -230,7 +381,6 @@ CMD ["rails", "server", "-b", "0.0.0.0", "-p", "{{ port }}"]
                 'confidence': 'none'
             }
 
-        # Выбираем язык с наивысшим приоритетом
         best = max(detections.items(),
                    key=lambda x: priority.get(x[1][0], 0))
 
@@ -246,18 +396,15 @@ CMD ["rails", "server", "-b", "0.0.0.0", "-p", "{{ port }}"]
             return bool(glob.glob(os.path.join(self.project_path, pattern)))
         return os.path.exists(os.path.join(self.project_path, pattern))
 
-    # ===== ОПРЕДЕЛЕНИЕ ВЕРСИИ =====
-
     def _detect_version(self, language: str) -> str:
         """Определяет версию языка"""
-
         if language == 'python':
             return self._detect_python_version()
         elif language == 'go':
             return self._detect_go_version()
-        elif language == 'node':
+        elif language in ['node', 'typescript']:
             return self._detect_node_version()
-        elif language == 'java':
+        elif language in ['java', 'kotlin']:
             return self._detect_java_version()
         elif language == 'php':
             return self._detect_php_version()
@@ -265,11 +412,9 @@ CMD ["rails", "server", "-b", "0.0.0.0", "-p", "{{ port }}"]
             return self._detect_rust_version()
         elif language == 'ruby':
             return self._detect_ruby_version()
-
         return "latest"
 
     def _detect_python_version(self) -> str:
-        """Определяет версию Python"""
         req_file = os.path.join(self.project_path, "requirements.txt")
         if os.path.exists(req_file):
             with open(req_file, 'r', encoding='utf-8') as f:
@@ -280,7 +425,6 @@ CMD ["rails", "server", "-b", "0.0.0.0", "-p", "{{ port }}"]
         return "3.11"
 
     def _detect_go_version(self) -> str:
-        """Определяет версию Go"""
         go_mod = os.path.join(self.project_path, "go.mod")
         if os.path.exists(go_mod):
             with open(go_mod, 'r', encoding='utf-8') as f:
@@ -290,7 +434,6 @@ CMD ["rails", "server", "-b", "0.0.0.0", "-p", "{{ port }}"]
         return "1.21"
 
     def _detect_node_version(self) -> str:
-        """Определяет версию Node.js"""
         pkg_json = os.path.join(self.project_path, "package.json")
         if os.path.exists(pkg_json):
             try:
@@ -305,7 +448,6 @@ CMD ["rails", "server", "-b", "0.0.0.0", "-p", "{{ port }}"]
         return "20"
 
     def _detect_java_version(self) -> str:
-        """Определяет версию Java"""
         pom_xml = os.path.join(self.project_path, "pom.xml")
         if os.path.exists(pom_xml):
             with open(pom_xml, 'r', encoding='utf-8') as f:
@@ -316,7 +458,6 @@ CMD ["rails", "server", "-b", "0.0.0.0", "-p", "{{ port }}"]
         return "17"
 
     def _detect_php_version(self) -> str:
-        """Определяет версию PHP"""
         composer = os.path.join(self.project_path, "composer.json")
         if os.path.exists(composer):
             try:
@@ -331,7 +472,6 @@ CMD ["rails", "server", "-b", "0.0.0.0", "-p", "{{ port }}"]
         return "8.2"
 
     def _detect_rust_version(self) -> str:
-        """Определяет версию Rust"""
         rust_toolchain = os.path.join(self.project_path, "rust-toolchain")
         if os.path.exists(rust_toolchain):
             with open(rust_toolchain, 'r', encoding='utf-8') as f:
@@ -339,30 +479,18 @@ CMD ["rails", "server", "-b", "0.0.0.0", "-p", "{{ port }}"]
         return "latest"
 
     def _detect_ruby_version(self) -> str:
-        """Определяет версию Ruby"""
         ruby_version = os.path.join(self.project_path, ".ruby-version")
         if os.path.exists(ruby_version):
             with open(ruby_version, 'r', encoding='utf-8') as f:
                 return f.read().strip()
         return "3.2"
 
-    # ===== DOCKERFILE =====
-
-    def _parse_dockerfile(self) -> Dict:
-        """Парсит существующий Dockerfile"""
-        from dockerfile_parser import DockerfileParser
-
-        parser = DockerfileParser(os.path.join(self.project_path, "Dockerfile"))
-        return parser.get_summary()
-
-    def _generate_dockerfile(self, language: str) -> Dict:
-        """Генерирует Dockerfile и возвращает информацию о нём"""
+    def _generate_dockerfile(self, language: str):
+        """Генерирует Dockerfile"""
         version = self.data['version']
-        port = 3000
-
         template_str = self.DOCKERFILE_TEMPLATES.get(
             language,
-            f"# Generated Dockerfile for {language}\nFROM alpine:latest\nWORKDIR /app\nCOPY . .\nEXPOSE {port}\nCMD [\"/bin/sh\"]\n"
+            f"FROM alpine:latest\nWORKDIR /app\nCOPY . .\nEXPOSE 3000\nCMD [\"/bin/sh\"]\n"
         )
 
         template = Template(template_str)
@@ -371,51 +499,141 @@ CMD ["rails", "server", "-b", "0.0.0.0", "-p", "{{ port }}"]
         dockerfile_content = template.render(
             version=version,
             version_short=version_short,
-            port=port
+            port=3000
         )
 
-        # Сохраняем Dockerfile
         dockerfile_path = os.path.join(self.project_path, "Dockerfile")
         with open(dockerfile_path, 'w', encoding='utf-8') as f:
             f.write(dockerfile_content)
 
-        print(f"✅ Dockerfile сгенерирован ({language}:{version})")
+        print(f"   ✅ Dockerfile создан: {dockerfile_path}")
 
-        # Парсим сгенерированный Dockerfile
+    def _parse_dockerfile(self) -> Dict:
+        """Парсит Dockerfile"""
         from dockerfile_parser import DockerfileParser
-        parser = DockerfileParser(dockerfile_path)
+        parser = DockerfileParser(os.path.join(self.project_path, "Dockerfile"))
         return parser.get_summary()
 
-    # ===== GETTERS =====
+    def _check_docker_compose(self) -> bool:
+        """Проверяет существование docker-compose файлов"""
+        compose_files = [
+            'docker-compose.yml',
+            'docker-compose.yaml',
+            'compose.yml',
+            'compose.yaml'
+        ]
 
-    def get_language(self) -> str:
-        """Возвращает язык"""
-        return self.data['language_info']['language']
+        for filename in compose_files:
+            if os.path.exists(os.path.join(self.project_path, filename)):
+                return True
 
-    def get_version(self) -> str:
-        """Возвращает версию языка"""
-        return self.data['version']
+        return False
 
-    def get_base_image(self) -> str:
-        """Возвращает базовый образ Docker"""
-        return self.data['base_image']
+    def _parse_docker_compose(self) -> Dict:
+        """Парсит docker-compose.yml"""
+        import yaml
 
-    def get_port(self) -> int:
-        """Возвращает порт приложения"""
-        return self.data['port']
+        compose_files = [
+            'docker-compose.yml',
+            'docker-compose.yaml',
+            'compose.yml',
+            'compose.yaml'
+        ]
 
-    def get_dockerfile_info(self) -> Dict:
-        """Возвращает всю информацию о Dockerfile"""
-        return self.data['dockerfile_info']
+        for filename in compose_files:
+            filepath = os.path.join(self.project_path, filename)
+            if os.path.exists(filepath):
+                try:
+                    with open(filepath, 'r', encoding='utf-8') as f:
+                        compose_data = yaml.safe_load(f)
+
+                    services = compose_data.get('services', {})
+
+                    return {
+                        'filename': filename,
+                        'services': list(services.keys()),
+                        'service_count': len(services),
+                        'has_build': any('build' in svc for svc in services.values()),
+                        'has_image': any('image' in svc for svc in services.values()),
+                        'networks': list(compose_data.get('networks', {}).keys()),
+                        'volumes': list(compose_data.get('volumes', {}).keys()),
+                    }
+                except Exception as e:
+                    print(f"⚠️  Не удалось распарсить {filename}: {e}")
+                    return {
+                        'filename': filename,
+                        'services': [],
+                        'service_count': 0,
+                        'has_build': False,
+                        'has_image': False,
+                        'networks': [],
+                        'volumes': [],
+                    }
+
+        return {}
+
+    def _extract_services_with_build(self) -> List[Dict]:
+        """Извлекает сервисы с build директивой из docker-compose.yml"""
+        import yaml
+
+        compose_files = [
+            'docker-compose.yml',
+            'docker-compose.yaml',
+            'compose.yml',
+            'compose.yaml'
+        ]
+
+        for filename in compose_files:
+            filepath = os.path.join(self.project_path, filename)
+            if os.path.exists(filepath):
+                try:
+                    with open(filepath, 'r', encoding='utf-8') as f:
+                        compose_data = yaml.safe_load(f)
+
+                    services = compose_data.get('services', {})
+                    services_with_build = []
+
+                    for service_name, service_config in services.items():
+                        if 'build' in service_config:
+                            build_path = service_config['build']
+
+                            # build может быть строкой или объектом
+                            if isinstance(build_path, dict):
+                                build_path = build_path.get('context', '.')
+
+                            # Проверяем существование Dockerfile
+                            dockerfile_path = os.path.join(
+                                self.project_path,
+                                build_path,
+                                'Dockerfile'
+                            )
+
+                            if os.path.exists(dockerfile_path):
+                                services_with_build.append({
+                                    'name': service_name,
+                                    'path': build_path,
+                                    'dockerfile': dockerfile_path
+                                })
+
+                    return services_with_build
+
+                except Exception as e:
+                    print(f"⚠️  Ошибка парсинга {filename}: {e}")
+
+        return []
 
     def get_summary(self) -> Dict:
-        """Возвращает полную сводку"""
+        """Возвращает сводку"""
         return {
-            'language': self.get_language(),
-            'version': self.get_version(),
-            'base_image': self.get_base_image(),
-            'port': self.get_port(),
+            'language': self.data['language_info']['language'],
+            'version': self.data['version'],
             'dockerfile_exists': self.data['dockerfile_exists'],
-            'dockerfile_info': self.get_dockerfile_info(),
+            'dockerfile_info': self.data.get('dockerfile_info'),
+            'docker_compose_exists': self.data.get('docker_compose_exists', False),
+            'docker_compose_info': self.data.get('docker_compose_info'),
+            'is_monorepo': self.data.get('is_monorepo', False),
+            'services': self.data.get('services', []),
+            'base_image': self.data['base_image'],
+            'artifact_paths': self.data.get('artifact_paths'),
             'language_info': self.data['language_info'],
         }
