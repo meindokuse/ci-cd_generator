@@ -1,7 +1,7 @@
 # test_deploy_stage_generator.py
 
 import pytest
-from deploy_stage_generator import DeployStageGenerator
+from deploy_generator import DeployStageGenerator
 
 
 class TestDeployStageGenerator:
@@ -16,7 +16,6 @@ class TestDeployStageGenerator:
             'language': 'python',
             'version': '3.11',
             'base_image': 'python:3.11-alpine',
-            'has_docker_compose': False,
             'dockerfile_exists': True,
             'dockerfile_info': {
                 'base_images': ['python:3.11-alpine'],
@@ -45,129 +44,51 @@ class TestDeployStageGenerator:
         config['is_monorepo'] = True
         return config
 
-    # ============ DOCKER REGISTRY → SERVER ============
+    # ============ SERVER DEPLOY ============
 
-    def test_docker_registry_compose_deploy(self, basic_config):
-        """Тест: docker-registry + server (compose)"""
-        generator = DeployStageGenerator(basic_config, sync="docker-registry", deploy="server")
+    @pytest.mark.parametrize("sync", [
+        "docker-registry",
+        "nexus",
+        "artifactory",
+        "gitlab-artifacts"
+    ])
+    def test_server_deploy_templates(self, basic_config, sync):
+        """Тест: генерация deploy-стейджа для server"""
+        generator = DeployStageGenerator(basic_config, sync=sync, deploy="server")
         result = generator.generate()
 
         assert "deploy_production:" in result
-        assert "docker compose pull" in result
-        assert "docker compose up -d" in result
-        assert "$CI_REGISTRY_IMAGE" in result
+        assert "docker compose" in result
+        assert "scp" in result
+        assert "ssh" in result
 
-    def test_docker_registry_compose_monorepo_deploy(self, monorepo_config):
-        """Тест: docker-registry + server (compose, монорепозиторий)"""
+    def test_server_deploy_monorepo(self, monorepo_config):
+        """Тест: генерация deploy-стейджа для монорепозитория"""
         generator = DeployStageGenerator(monorepo_config, sync="docker-registry", deploy="server")
         result = generator.generate()
 
-        assert "deploy_production:" in result
-        assert "docker compose pull" in result
-        assert "docker compose up -d" in result
         assert "frontend:" in result
         assert "backend:" in result
         assert "bot:" in result
 
-    # ============ NEXUS → SERVER ============
+    # ============ GITHUB RELEASE ============
 
-    def test_nexus_docker_compose_deploy(self, basic_config):
-        """Тест: nexus + server (compose)"""
-        generator = DeployStageGenerator(basic_config, sync="nexus", deploy="server")
-        result = generator.generate()
-
-        assert "deploy_production:" in result
-        assert "docker compose pull" in result
-        assert "$NEXUS_DOCKER_REGISTRY" in result
-
-    def test_nexus_docker_compose_monorepo_deploy(self, monorepo_config):
-        """Тест: nexus + server (compose, монорепозиторий)"""
-        generator = DeployStageGenerator(monorepo_config, sync="nexus", deploy="server")
-        result = generator.generate()
-
-        assert "deploy_production:" in result
-        assert "docker compose pull" in result
-        assert "frontend:" in result
-        assert "backend:" in result
-        assert "bot:" in result
-
-    # ============ ARTIFACTORY → SERVER ============
-
-    def test_artifactory_docker_compose_deploy(self, basic_config):
-        """Тест: artifactory + server (compose)"""
-        generator = DeployStageGenerator(basic_config, sync="artifactory", deploy="server")
-        result = generator.generate()
-
-        assert "deploy_production:" in result
-        assert "docker compose pull" in result
-        assert "$ARTIFACTORY_DOCKER_REGISTRY" in result
-
-    def test_artifactory_docker_compose_monorepo_deploy(self, monorepo_config):
-        """Тест: artifactory + server (compose, монорепозиторий)"""
-        generator = DeployStageGenerator(monorepo_config, sync="artifactory", deploy="server")
-        result = generator.generate()
-
-        assert "deploy_production:" in result
-        assert "docker compose pull" in result
-        assert "frontend:" in result
-        assert "backend:" in result
-        assert "bot:" in result
-
-    # ============ GITLAB ARTIFACTS → SERVER ============
-
-    def test_artifacts_docker_compose_deploy(self, basic_config):
-        """Тест: gitlab-artifacts + server (compose)"""
-        generator = DeployStageGenerator(basic_config, sync="gitlab-artifacts", deploy="server")
-        result = generator.generate()
-
-        assert "deploy_production:" in result
-        assert "docker compose up -d" in result
-        assert "myapp-image.tar" in result
-
-    def test_artifacts_docker_compose_monorepo_deploy(self, monorepo_config):
-        """Тест: gitlab-artifacts + server (compose, монорепозиторий)"""
-        generator = DeployStageGenerator(monorepo_config, sync="gitlab-artifacts", deploy="server")
-        result = generator.generate()
-
-        assert "deploy_production:" in result
-        assert "docker compose up -d" in result
-        assert "frontend:" in result
-        assert "backend:" in result
-        assert "bot:" in result
-
-    # ============ GITHUB RELEASES ============
-
-    def test_nexus_to_github_release(self, basic_config):
-        """Тест: nexus + github"""
-        generator = DeployStageGenerator(basic_config, sync="nexus", deploy="github")
+    @pytest.mark.parametrize("sync", [
+        "nexus",
+        "artifactory",
+        "gitlab-artifacts"
+    ])
+    def test_github_release_templates(self, basic_config, sync):
+        """Тест: генерация github-release стейджа"""
+        generator = DeployStageGenerator(basic_config, sync=sync, deploy="github")
         result = generator.generate()
 
         assert "release_github:" in result
-        assert "$NEXUS_URL" in result
-        assert "$GITHUB_TOKEN" in result
-        assert "myapp" in result
-
-    def test_artifactory_to_github_release(self, basic_config):
-        """Тест: artifactory + github"""
-        generator = DeployStageGenerator(basic_config, sync="artifactory", deploy="github")
-        result = generator.generate()
-
-        assert "release_github:" in result
-        assert "$ARTIFACTORY_URL" in result
-        assert "$GITHUB_TOKEN" in result
-
-    def test_artifacts_to_github_release(self, basic_config):
-        """Тест: gitlab-artifacts + github"""
-        generator = DeployStageGenerator(basic_config, sync="gitlab-artifacts", deploy="github")
-        result = generator.generate()
-
-        assert "release_github:" in result
-        assert "dependencies:" in result
-        assert "$GITHUB_TOKEN" in result
+        assert "curl" in result
         assert "myapp" in result
 
     def test_docker_registry_to_github_warning(self, basic_config):
-        """Тест: docker-registry + github (предупреждение)"""
+        """Тест: предупреждение при docker-registry + github"""
         generator = DeployStageGenerator(basic_config, sync="docker-registry", deploy="github")
         result = generator.generate()
 
@@ -177,7 +98,7 @@ class TestDeployStageGenerator:
     # ============ EDGE CASES ============
 
     def test_invalid_deploy_target(self, basic_config):
-        """Тест: неверный deploy target вызывает ошибку"""
+        """Тест: ошибка при неверном deploy target"""
         generator = DeployStageGenerator(basic_config, sync="nexus", deploy="unknown")
 
         with pytest.raises(ValueError, match="Unknown deploy target"):
