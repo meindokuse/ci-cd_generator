@@ -1,237 +1,240 @@
-# build_generator.py
+# src/deploy/deploy_generator.py
 
-import os
-from typing import Dict, List
 from jinja2 import Template
 
 
-class BuildStageGenerator:
-    """Генератор build stage с поддержкой monorepo"""
+class DeployStageGenerator:
+    """Генератор Deploy stage с поддержкой переменных окружения"""
 
-    # Docker build + push to Docker Registry
-    DOCKER_BUILD = """build:
-  stage: build
-  image: docker:24-cli
-  services:
-    - docker:24-dind
-  variables:
-    DOCKER_DRIVER: overlay2
-    DOCKER_TLS_CERTDIR: "/certs"
+    # Docker Registry → Server Deploy (с передачей ENV в docker run)
+    DOCKER_REGISTRY_SERVER_DEPLOY = """deploy:
+  stage: deploy
+  image: alpine:latest
   before_script:
-    - echo "🔐 Logging into Docker Registry..."
-    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+    - echo "================================================"
+    - echo "DEPLOY STAGE - Docker Registry → Server"
+    - echo "================================================"
+    - apk add --no-cache openssh-client
+    - mkdir -p ~/.ssh
+    - echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+    - chmod 600 ~/.ssh/id_rsa
+    - ssh-keyscan -p $SSH_PORT -H $DEPLOY_HOST >> ~/.ssh/known_hosts
   script:
-    - echo "🏗️  Building Docker image..."
-    - docker build -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA -t $CI_REGISTRY_IMAGE:latest .
-    - echo "📤 Pushing to Docker Registry..."
-    - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
-    - docker push $CI_REGISTRY_IMAGE:latest
-    - echo "✅ Docker image stored in registry"
-  only:
-    - main
-  tags:
-    - docker
-  retry:
-    max: 2
-"""
+    - echo "🚀 Deploying to server..."
+    - echo "   Server: $DEPLOY_HOST"
+    - echo "   Image: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
+    - echo ""
 
-    # Build artifact + upload to Nexus
-    NEXUS_BUILD = """build:
-  stage: build
-  image: {{ base_image }}
-  script:
-    - echo "🏗️  Building artifacts..."
-    - {{ build_command }}
-    - echo "📤 Uploading to Nexus..."
+    # ========== НОВОЕ: Генерируем docker run с переменными окружения ==========
     - |
-      for file in {{ artifact_path }}; do
-        curl -v -u $NEXUS_USER:$NEXUS_PASSWORD \\
-          --upload-file $file \\
-          "$NEXUS_URL/repository/{{ repository }}/{{ group_id }}/{{ artifact_id }}/$CI_PIPELINE_ID/$(basename $file)"
-      done
-    - echo "✅ Artifact stored in Nexus"
+      # Формируем список -e переменных окружения
+      ENV_VARS=""
+      {% if env_vars %}
+      # Добавляем все переменные окружения в docker run
+      {% for var_name in env_vars %}
+      if [ ! -z "${{ var_name }}" ]; then
+        ENV_VARS="$ENV_VARS -e {{ var_name }}='${{ var_name }}'"
+      fi
+      {% endfor %}
+      {% endif %}
+
+      echo "🔐 Environment variables for deployment:"
+      {% if env_vars %}
+      {% for var_name in env_vars %}
+      echo "   → {{ var_name }}"
+      {% endfor %}
+      {% else %}
+      echo "   (no environment variables)"
+      {% endif %}
+      echo ""
+
+      # Deploy на сервер
+      ssh -p $SSH_PORT $DEPLOY_USER@$DEPLOY_HOST "
+        # Логин в Docker Registry
+        docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+
+        # Pull новый образ
+        docker pull $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+
+        # Останавливаем старый контейнер
+        docker stop {{ container_name }} || true
+        docker rm {{ container_name }} || true
+
+        # Запускаем новый контейнер с переменными окружения
+        docker run -d \
+          --name {{ container_name }} \
+          --restart unless-stopped \
+          -p {{ host_port }}:{{ container_port }} \
+          $ENV_VARS \
+          $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+
+        # Проверяем статус
+        docker ps | grep {{ container_name }}
+      "
+
+    - echo ""
+    - echo "✅ Deployment complete!"
+    - echo "   Container: {{ container_name }}"
+    - echo "   URL: http://$DEPLOY_HOST:{{ host_port }}"
+  environment:
+    name: production
+    url: http://$DEPLOY_HOST:{{ host_port }}
   only:
     - main
+  when: manual
   tags:
     - docker
 """
 
-    # Build artifact + upload to Artifactory
-    ARTIFACTORY_BUILD = """build:
-  stage: build
-  image: {{ base_image }}
+    # Docker Registry → Kubernetes Deploy (с передачей ENV в k8s deployment)
+    DOCKER_REGISTRY_K8S_DEPLOY = """deploy:
+  stage: deploy
+  image: bitnami/kubectl:latest
+  before_script:
+    - echo "================================================"
+    - echo "DEPLOY STAGE - Docker Registry → Kubernetes"
+    - echo "================================================"
+    - echo "🔧 Configuring kubectl..."
+    - mkdir -p ~/.kube
+    - echo "$KUBE_CONFIG" | base64 -d > ~/.kube/config
+    - kubectl version --client
   script:
-    - echo "🏗️  Building artifacts..."
-    - {{ build_command }}
-    - echo "📤 Uploading to Artifactory..."
+    - echo "🚀 Deploying to Kubernetes..."
+    - echo "   Namespace: $K8S_NAMESPACE"
+    - echo "   Image: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
+    - echo ""
+
+    # ========== НОВОЕ: Создаём Secret с переменными окружения ==========
+    {% if env_vars %}
+    - echo "🔐 Creating Kubernetes Secret with environment variables..."
     - |
-      for file in {{ artifact_path }}; do
-        curl -u $ARTIFACTORY_USER:$ARTIFACTORY_PASSWORD \\
-          -T $file \\
-          "$ARTIFACTORY_URL/{{ repository }}/{{ group_id }}/{{ artifact_id }}/$CI_PIPELINE_ID/$(basename $file)"
-      done
-    - echo "✅ Artifact stored in Artifactory"
+      # Удаляем старый secret
+      kubectl delete secret {{ app_name }}-env --namespace=$K8S_NAMESPACE || true
+
+      # Создаём новый secret со всеми переменными
+      kubectl create secret generic {{ app_name }}-env \
+        --namespace=$K8S_NAMESPACE \
+      {% for var_name in env_vars %}
+        --from-literal={{ var_name }}="${{ var_name }}" \
+      {% endfor %}
+        --dry-run=client -o yaml | kubectl apply -f -
+    - echo ""
+    {% endif %}
+
+    # Генерируем deployment manifest
+    - |
+      cat > deployment.yaml <<EOF
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: {{ app_name }}
+        namespace: $K8S_NAMESPACE
+      spec:
+        replicas: {{ replicas }}
+        selector:
+          matchLabels:
+            app: {{ app_name }}
+        template:
+          metadata:
+            labels:
+              app: {{ app_name }}
+          spec:
+            containers:
+            - name: {{ app_name }}
+              image: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+              ports:
+              - containerPort: {{ container_port }}
+              {% if env_vars %}
+              # Инжектим переменные из Secret
+              envFrom:
+              - secretRef:
+                  name: {{ app_name }}-env
+              {% endif %}
+              livenessProbe:
+                httpGet:
+                  path: /health
+                  port: {{ container_port }}
+                initialDelaySeconds: 30
+                periodSeconds: 10
+              readinessProbe:
+                httpGet:
+                  path: /health
+                  port: {{ container_port }}
+                initialDelaySeconds: 5
+                periodSeconds: 5
+      ---
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: {{ app_name }}
+        namespace: $K8S_NAMESPACE
+      spec:
+        type: LoadBalancer
+        selector:
+          app: {{ app_name }}
+        ports:
+        - port: 80
+          targetPort: {{ container_port }}
+      EOF
+
+    - echo "📦 Applying deployment..."
+    - kubectl apply -f deployment.yaml
+
+    - echo ""
+    - echo "⏳ Waiting for rollout..."
+    - kubectl rollout status deployment/{{ app_name }} --namespace=$K8S_NAMESPACE --timeout=5m
+
+    - echo ""
+    - echo "✅ Deployment complete!"
+    - kubectl get pods --namespace=$K8S_NAMESPACE -l app={{ app_name }}
+    - kubectl get service {{ app_name }} --namespace=$K8S_NAMESPACE
+  environment:
+    name: production
+    kubernetes:
+      namespace: $K8S_NAMESPACE
   only:
     - main
+  when: manual
   tags:
     - docker
 """
 
-    # Build artifact + save to GitLab Artifacts
-    GITLAB_ARTIFACTS_BUILD = """build:
-  stage: build
-  image: {{ base_image }}
-  script:
-    - echo "🏗️  Building artifacts..."
-    - {{ build_command }}
-    - echo "✅ Artifact created locally"
-  artifacts:
-    paths:
-      - {{ artifact_path }}
-    expire_in: 1 week
-  only:
-    - main
-  tags:
-    - docker
-"""
-
-    def __init__(self, config: Dict, sync_target: str):
-        """
-        Args:
-            config: Конфигурация проекта
-            sync_target: 'docker-registry', 'nexus', 'artifactory', 'gitlab-artifacts'
-        """
+    def __init__(self, config: dict, sync_target: str, deploy_target: str = None):
         self.config = config
         self.sync_target = sync_target
-        self.is_monorepo = config.get('is_monorepo', False)
-        self.services = config.get('services', [])
+        self.deploy_target = deploy_target
+
+        # ========== НОВОЕ: Получаем список переменных окружения ==========
+        self.env_vars = []
+        if config.get('env_summary', {}).get('variables'):
+            self.env_vars = list(config['env_summary']['variables'].keys())
 
     def generate(self) -> str:
-        """Генерирует build stage"""
+        """Генерирует deploy stage"""
 
-        # Monorepo: несколько сервисов
-        if self.is_monorepo and len(self.services) > 0:
-            return self._generate_monorepo_builds()
+        if not self.deploy_target:
+            return "# No deployment target specified\n"
 
-        # Single service
-        if self.sync_target == 'docker-registry':
-            return self.DOCKER_BUILD
-        elif self.sync_target == 'nexus':
-            return self._generate_nexus()
-        elif self.sync_target == 'artifactory':
-            return self._generate_artifactory()
-        elif self.sync_target == 'gitlab-artifacts':
-            return self._generate_gitlab_artifacts()
+        # Определяем имя приложения из проекта
+        app_name = self.config.get('language', 'app')
+
+        if self.sync_target == 'docker-registry' and self.deploy_target == 'server':
+            template = Template(self.DOCKER_REGISTRY_SERVER_DEPLOY)
+            return template.render(
+                container_name=app_name,
+                host_port=80,
+                container_port=8080,
+                env_vars=self.env_vars,  # ← НОВОЕ
+            )
+
+        elif self.sync_target == 'docker-registry' and self.deploy_target == 'k8s':
+            template = Template(self.DOCKER_REGISTRY_K8S_DEPLOY)
+            return template.render(
+                app_name=app_name,
+                container_port=8080,
+                replicas=3,
+                env_vars=self.env_vars,  # ← НОВОЕ
+            )
+
         else:
-            raise ValueError(f"❌ Unknown sync_target: {self.sync_target}")
-
-    def _generate_monorepo_builds(self) -> str:
-        """Генерирует отдельный build job для каждого сервиса в monorepo"""
-
-        builds = []
-
-        for service in self.services:
-            service_name = service['name']
-            service_path = service['path']
-
-            build_job = f"""build_{service_name}:
-  stage: build
-  image: docker:24-cli
-  services:
-    - docker:24-dind
-  variables:
-    DOCKER_DRIVER: overlay2
-    DOCKER_TLS_CERTDIR: "/certs"
-  before_script:
-    - echo "🔐 Logging into Docker Registry..."
-    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
-  script:
-    - echo "🏗️  Building {service_name} service..."
-    - docker build -t $CI_REGISTRY_IMAGE/{service_name}:$CI_COMMIT_SHA -t $CI_REGISTRY_IMAGE/{service_name}:latest ./{service_path}
-    - echo "📤 Pushing to Docker Registry..."
-    - docker push $CI_REGISTRY_IMAGE/{service_name}:$CI_COMMIT_SHA
-    - docker push $CI_REGISTRY_IMAGE/{service_name}:latest
-    - echo "✅ {service_name} image stored in registry"
-  only:
-    - main
-  tags:
-    - docker
-  retry:
-    max: 2
-"""
-            builds.append(build_job)
-
-        return "\n".join(builds)
-
-    def _generate_nexus(self) -> str:
-        template = Template(self.NEXUS_BUILD)
-        artifact_paths = self.config.get('artifact_paths', {})
-        language = self.config.get('language', 'unknown')
-
-        return template.render(
-            base_image=self.config.get('base_image', 'alpine:latest'),
-            build_command=artifact_paths.get('build_command', 'echo "No build"'),
-            artifact_path=artifact_paths.get('artifact_path', '*'),
-            repository=self._get_nexus_repo(language),
-            group_id=self._get_group_id(language),
-            artifact_id=self._get_artifact_id(),
-        )
-
-    def _generate_artifactory(self) -> str:
-        template = Template(self.ARTIFACTORY_BUILD)
-        artifact_paths = self.config.get('artifact_paths', {})
-        language = self.config.get('language', 'unknown')
-
-        return template.render(
-            base_image=self.config.get('base_image', 'alpine:latest'),
-            build_command=artifact_paths.get('build_command', 'echo "No build"'),
-            artifact_path=artifact_paths.get('artifact_path', '*'),
-            repository=self._get_artifactory_repo(language),
-            group_id=self._get_group_id(language),
-            artifact_id=self._get_artifact_id(),
-        )
-
-    def _generate_gitlab_artifacts(self) -> str:
-        template = Template(self.GITLAB_ARTIFACTS_BUILD)
-        artifact_paths = self.config.get('artifact_paths', {})
-
-        return template.render(
-            base_image=self.config.get('base_image', 'alpine:latest'),
-            build_command=artifact_paths.get('build_command', 'echo "No build"'),
-            artifact_path=artifact_paths.get('artifact_path', '*'),
-        )
-
-    def _get_nexus_repo(self, language: str) -> str:
-        repos = {
-            'java': 'maven-releases',
-            'kotlin': 'maven-releases',
-            'python': 'pypi-hosted',
-            'node': 'npm-hosted',
-            'typescript': 'npm-hosted',
-            'go': 'raw-hosted',
-            'rust': 'raw-hosted',
-        }
-        return repos.get(language, 'raw-hosted')
-
-    def _get_artifactory_repo(self, language: str) -> str:
-        repos = {
-            'java': 'libs-release-local',
-            'kotlin': 'libs-release-local',
-            'python': 'pypi-local',
-            'node': 'npm-local',
-            'typescript': 'npm-local',
-            'go': 'go-local',
-            'rust': 'generic-local',
-        }
-        return repos.get(language, 'generic-local')
-
-    def _get_group_id(self, language: str) -> str:
-        if language in ['java', 'kotlin']:
-            return 'com.example'
-        return language
-
-    def _get_artifact_id(self) -> str:
-        return os.path.basename(os.getcwd())
-
-    def get_output_string(self) -> str:
-        return self.generate()
+            return f"# Unsupported deployment: {self.sync_target} → {self.deploy_target}\n"
