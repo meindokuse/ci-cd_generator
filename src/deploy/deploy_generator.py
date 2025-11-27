@@ -1,10 +1,10 @@
+# src/deploy_generator.py
+
 from jinja2 import Template
 
 
 class DeployStageGenerator:
-    """
-    Генератор deploy-стейджа на основе комбинации sync + deploy
-    """
+    """Генератор deploy-стейджа на основе комбинации sync + deploy"""
 
     def __init__(self, config: dict, sync: str, deploy: str):
         """
@@ -15,10 +15,10 @@ class DeployStageGenerator:
         self.config = config
         self.sync = sync
         self.deploy = deploy
-        # Всегда генерируем compose, так как у нас есть services
-        self.use_compose = True
 
     def generate(self) -> str:
+        print(f"  → Генерирую DEPLOY stage ({self.sync} → {self.deploy})")
+
         # Роутинг по комбинациям
         if self.deploy == "server":
             return self._generate_server_deploy()
@@ -30,10 +30,7 @@ class DeployStageGenerator:
     # ============ SERVER DEPLOY ============
 
     def _generate_server_deploy(self):
-        """
-        deploy=server → всегда Docker (compose)
-        Различие только в источнике образа (sync)
-        """
+        """deploy=server → всегда Docker (compose или run)"""
         if self.sync == "docker-registry":
             return self._docker_registry_to_server()
         elif self.sync == "nexus":
@@ -69,75 +66,31 @@ class DeployStageGenerator:
         elif self.sync == "gitlab-artifacts":
             return self._render(self.ARTIFACTS_TO_GITHUB_TEMPLATE)
         elif self.sync == "docker-registry":
-            # Предупреждение: странная комбинация
-            print("⚠️  WARNING: docker-registry + github — необычная комбинация!")
+            print("     ⚠️  docker-registry + github — необычная комбинация!")
             return self._render(self.DOCKER_TO_GITHUB_WARNING_TEMPLATE)
 
     def _render(self, template_str: str) -> str:
-        """Рендерит Jinja2 шаблон с параметрами из config (результата get_summary)"""
+        """Рендерит Jinja2 шаблон с параметрами из config"""
 
-        # Получаем все данные из self.config (результат get_summary)
+        # Получаем данные
         language = self.config.get("language", "unknown")
         version = self.config.get("version", "latest")
-        base_image = self.config.get("base_image", "alpine:latest")
-
-        # Dockerfile info может быть None
-        dockerfile_info = self.config.get("dockerfile_info") or {}
-        base_images = dockerfile_info.get("base_images", [])
-        final_image = dockerfile_info.get("final_image", base_image)
-        is_multistage = dockerfile_info.get("is_multistage", False)
-
-        # Docker Compose info
-        docker_compose_exists = self.config.get("docker_compose_exists", False)
-        docker_compose_info = self.config.get("docker_compose_info")
-
-        # Информация о сервисах
         services = self.config.get("services", [])
-
-        #   пример +- как выгляит это структура    "services = [
-        #     {'name': 'frontend', 'path': './frontend'},
-        #     {'name': 'backend', 'path': './backend'},
-        #     {'name': 'bot', 'path': './bot'},
-        # ]"
-
-        # Артефакты
-        artifact_paths = self.config.get("artifact_paths") or {}
-        artifact_path = artifact_paths.get("artifact_path", "")
-        artifact_name = artifact_paths.get("artifact_name", "")
-        build_command = artifact_paths.get("build_command", "")
-        artifact_type = artifact_paths.get("artifact_type", "")
-
-        # Language info
-        language_info = self.config.get("language_info", {})
-
-        # Прочие поля
         is_monorepo = self.config.get("is_monorepo", False)
-        dockerfile_exists = self.config.get("dockerfile_exists", False)
+        artifact_paths = self.config.get("artifact_paths") or {}
+        artifact_name = artifact_paths.get("artifact_name", "app")
 
-        # Параметры для рендеринга (все поля из анализатора)
+        # Для single service используем имя проекта
+        project_name = self.config.get("language", "app")
+
+        # Параметры для рендеринга
         params = {
-            # Основные параметры языка
             "language": language,
             "version": version,
-            "base_image": base_image,
-            "language_info": language_info,
-            # Dockerfile info
-            "base_images": base_images,
-            "final_image": final_image,
-            "is_multistage": is_multistage,
-            "dockerfile_exists": dockerfile_exists,
-            # Docker Compose info
-            "docker_compose_exists": docker_compose_exists,
-            "docker_compose_info": docker_compose_info,
-            # Информация о сервисах
             "services": services,
-            # Артефакты
-            "artifact_path": artifact_path,
-            "artifact_name": artifact_name,
-            "build_command": build_command,
-            "artifact_type": artifact_type,
-            # Дополнительные поля
             "is_monorepo": is_monorepo,
+            "artifact_name": artifact_name,
+            "project_name": project_name,
         }
 
         template = Template(template_str)
@@ -149,54 +102,68 @@ class DeployStageGenerator:
 
     DOCKER_REGISTRY_COMPOSE_TEMPLATE = """deploy_production:
   stage: deploy
-  image: docker:24-cli
-  services:
-    - docker:24-dind
-
-  script:
-    - echo "🚀 Deploy from GitLab Container Registry (compose)"
-    - docker login "$CI_REGISTRY" -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD"
-
-    # Подготовка SSH
-    - apk add --no-cache openssh-client
-    - eval $(ssh-agent -s)
-    - echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+  image: alpine:latest
+  before_script:
+    - echo "================================================"
+    - echo "DEPLOY STAGE - Docker Registry → Server"
+    - echo "================================================"
+    - apk add --no-cache openssh-client docker-cli docker-compose
     - mkdir -p ~/.ssh
     - chmod 700 ~/.ssh
-    - echo "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
-
-    # Генерация docker-compose.yml
+    - echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+    - chmod 600 ~/.ssh/id_rsa
+    - ssh-keyscan -H $SSH_HOST >> ~/.ssh/known_hosts 2>/dev/null
+  script:
+    - echo ""
+    - echo "🐳 Generating docker-compose.prod.yml..."
     - |
-      cat > docker-compose.yml << EOF
-      version: '3.9'
+      cat > docker-compose.prod.yml << 'COMPOSE_EOF'
+      version: "3.9"
       services:
-      {% if is_monorepo %}
-        {% for service in services %}
+{% if is_monorepo %}
+{% for service in services %}
         {{ service.name }}:
-          image: $CI_REGISTRY_IMAGE:{{ service.name }}-$CI_COMMIT_SHA
-          build: {{ service.path }}
-        {% endfor %}
-      {% else %}
+          image: ${CI_REGISTRY_IMAGE}/{{ service.name }}:${CI_COMMIT_SHA}
+          restart: unless-stopped
+{% endfor %}
+{% else %}
         app:
-          image: $CI_REGISTRY_IMAGE:{{ artifact_name }}-$CI_COMMIT_SHA
-          build: .
-      {% endif %}
-      EOF
+          image: ${CI_REGISTRY_IMAGE}:${CI_COMMIT_SHA}
+          restart: unless-stopped
+          ports:
+            - "3000:3000"
+{% endif %}
+      COMPOSE_EOF
 
-    # Передача compose-файла на сервер
-    - scp docker-compose.yml $SSH_USER@$SSH_HOST:$REMOTE_COMPOSE_DIR/
-    - ssh "$SSH_USER@$SSH_HOST" "
-        cd $REMOTE_COMPOSE_DIR &&
-        docker login $CI_REGISTRY -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD &&
-        docker compose pull &&
-        docker compose up -d
-      "
+    - echo ""
+    - echo "📤 Uploading docker-compose.prod.yml to server..."
+    - scp -P ${SSH_PORT:-22} docker-compose.prod.yml $SSH_USER@$SSH_HOST:/app/docker-compose.yml
 
-    - echo "✅ Deployed via docker-compose!"
+    - echo ""
+    - echo "📝 Creating .env file..."
+    - |
+      cat > .env.deploy << 'ENV_EOF'
+      CI_REGISTRY_IMAGE=$CI_REGISTRY_IMAGE
+      CI_COMMIT_SHA=$CI_COMMIT_SHA
+      ENV_EOF
+    - scp -P ${SSH_PORT:-22} .env.deploy $SSH_USER@$SSH_HOST:/app/.env
+
+    - echo ""
+    - echo "🚀 Deploying on server..."
+    - |
+      ssh -p ${SSH_PORT:-22} $SSH_USER@$SSH_HOST << 'REMOTE_SCRIPT'
+      cd /app
+      export $(cat .env | xargs)
+      docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+      docker-compose pull
+      docker-compose up -d
+      docker image prune -f
+      echo "✅ Deploy complete!"
+      REMOTE_SCRIPT
 
   environment:
     name: production
-    url: http://$SSH_HOST:$DEPLOY_PORT
+    url: http://$SSH_HOST
   only:
     - main
   when: manual
@@ -206,112 +173,139 @@ class DeployStageGenerator:
 
     NEXUS_DOCKER_COMPOSE_TEMPLATE = """deploy_production:
   stage: deploy
-  image: docker:24-cli
-  services:
-    - docker:24-dind
-
-  script:
-    - echo "🚀 Deploy from Nexus Docker Registry (compose)"
-    - docker login $NEXUS_DOCKER_REGISTRY -u $NEXUS_USER -p $NEXUS_PASSWORD
-
-    # Подготовка SSH
-    - apk add --no-cache openssh-client
-    - eval $(ssh-agent -s)
-    - echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+  image: alpine:latest
+  before_script:
+    - echo "================================================"
+    - echo "DEPLOY STAGE - Nexus Docker Registry → Server"
+    - echo "================================================"
+    - apk add --no-cache openssh-client docker-cli docker-compose
     - mkdir -p ~/.ssh
     - chmod 700 ~/.ssh
-    - echo "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
-
-    # Генерация docker-compose.yml
+    - echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+    - chmod 600 ~/.ssh/id_rsa
+    - ssh-keyscan -H $SSH_HOST >> ~/.ssh/known_hosts 2>/dev/null
+  script:
+    - echo ""
+    - echo "🐳 Generating docker-compose.prod.yml..."
     - |
-      cat > docker-compose.yml << EOF
-      version: '3.9'
+      cat > docker-compose.prod.yml << 'COMPOSE_EOF'
+      version: "3.9"
       services:
-      {% if is_monorepo %}
-        {% for service in services %}
+{% if is_monorepo %}
+{% for service in services %}
         {{ service.name }}:
-          image: $NEXUS_DOCKER_REGISTRY/{{ service.name }}:$CI_COMMIT_SHA
-          build: {{ service.path }}
-        {% endfor %}
-      {% else %}
+          image: ${NEXUS_DOCKER_REGISTRY}/{{ service.name }}:${CI_COMMIT_SHA}
+          restart: unless-stopped
+{% endfor %}
+{% else %}
         app:
-          image: $NEXUS_DOCKER_REGISTRY/{{ artifact_name }}:$CI_COMMIT_SHA
-          build: .
-      {% endif %}
-      EOF
+          image: ${NEXUS_DOCKER_REGISTRY}/{{ project_name }}:${CI_COMMIT_SHA}
+          restart: unless-stopped
+          ports:
+            - "3000:3000"
+{% endif %}
+      COMPOSE_EOF
 
-    # Передача compose-файла на сервер
-    - scp docker-compose.yml $SSH_USER@$SSH_HOST:$REMOTE_COMPOSE_DIR/
-    - ssh "$SSH_USER@$SSH_HOST" "
-        cd $REMOTE_COMPOSE_DIR &&
-        docker login $NEXUS_DOCKER_REGISTRY -u $NEXUS_USER -p $NEXUS_PASSWORD &&
-        docker compose pull &&
-        docker compose up -d
-      "
+    - echo ""
+    - echo "📤 Uploading to server..."
+    - scp -P ${SSH_PORT:-22} docker-compose.prod.yml $SSH_USER@$SSH_HOST:/app/docker-compose.yml
 
-    - echo "✅ Deployed via docker-compose from Nexus!"
+    - |
+      cat > .env.deploy << 'ENV_EOF'
+      NEXUS_DOCKER_REGISTRY=$NEXUS_DOCKER_REGISTRY
+      CI_COMMIT_SHA=$CI_COMMIT_SHA
+      NEXUS_USER=$NEXUS_USER
+      NEXUS_PASSWORD=$NEXUS_PASSWORD
+      ENV_EOF
+    - scp -P ${SSH_PORT:-22} .env.deploy $SSH_USER@$SSH_HOST:/app/.env
+
+    - echo ""
+    - echo "🚀 Deploying..."
+    - |
+      ssh -p ${SSH_PORT:-22} $SSH_USER@$SSH_HOST << 'REMOTE_SCRIPT'
+      cd /app
+      export $(cat .env | xargs)
+      docker login -u $NEXUS_USER -p $NEXUS_PASSWORD $NEXUS_DOCKER_REGISTRY
+      docker-compose pull
+      docker-compose up -d
+      docker image prune -f
+      echo "✅ Deploy complete!"
+      REMOTE_SCRIPT
 
   environment:
     name: production
-    url: http://$SSH_HOST:$DEPLOY_PORT
+    url: http://$SSH_HOST
   only:
     - main
   when: manual
   tags:
     - docker
-
 """
 
     ARTIFACTORY_DOCKER_COMPOSE_TEMPLATE = """deploy_production:
   stage: deploy
-  image: docker:24-cli
-  services:
-    - docker:24-dind
-
-  script:
-    - echo "🚀 Deploy from Artifactory Docker Registry (compose)"
-    - docker login $ARTIFACTORY_DOCKER_REGISTRY -u $ARTIFACTORY_USER -p $ARTIFACTORY_PASSWORD
-
-    # Подготовка SSH
-    - apk add --no-cache openssh-client
-    - eval $(ssh-agent -s)
-    - echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+  image: alpine:latest
+  before_script:
+    - echo "================================================"
+    - echo "DEPLOY STAGE - Artifactory Docker Registry → Server"
+    - echo "================================================"
+    - apk add --no-cache openssh-client docker-cli docker-compose
     - mkdir -p ~/.ssh
     - chmod 700 ~/.ssh
-    - echo "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
-
-    # Генерация docker-compose.yml
+    - echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+    - chmod 600 ~/.ssh/id_rsa
+    - ssh-keyscan -H $SSH_HOST >> ~/.ssh/known_hosts 2>/dev/null
+  script:
+    - echo ""
+    - echo "🐳 Generating docker-compose.prod.yml..."
     - |
-      cat > docker-compose.yml << EOF
-      version: '3.9'
+      cat > docker-compose.prod.yml << 'COMPOSE_EOF'
+      version: "3.9"
       services:
-      {% if is_monorepo %}
-        {% for service in services %}
+{% if is_monorepo %}
+{% for service in services %}
         {{ service.name }}:
-          image: $ARTIFACTORY_DOCKER_REGISTRY/{{ service.name }}:$CI_COMMIT_SHA
-          build: {{ service.path }}
-        {% endfor %}
-      {% else %}
+          image: ${ARTIFACTORY_DOCKER_REGISTRY}/{{ service.name }}:${CI_COMMIT_SHA}
+          restart: unless-stopped
+{% endfor %}
+{% else %}
         app:
-          image: $ARTIFACTORY_DOCKER_REGISTRY/{{ artifact_name }}:$CI_COMMIT_SHA
-          build: .
-      {% endif %}
-      EOF
+          image: ${ARTIFACTORY_DOCKER_REGISTRY}/{{ project_name }}:${CI_COMMIT_SHA}
+          restart: unless-stopped
+          ports:
+            - "3000:3000"
+{% endif %}
+      COMPOSE_EOF
 
-    # Передача compose-файла на сервер
-    - scp docker-compose.yml $SSH_USER@$SSH_HOST:$REMOTE_COMPOSE_DIR/
-    - ssh "$SSH_USER@$SSH_HOST" "
-        cd $REMOTE_COMPOSE_DIR &&
-        docker login $ARTIFACTORY_DOCKER_REGISTRY -u $ARTIFACTORY_USER -p $ARTIFACTORY_PASSWORD &&
-        docker compose pull &&
-        docker compose up -d
-      "
+    - echo ""
+    - echo "📤 Uploading to server..."
+    - scp -P ${SSH_PORT:-22} docker-compose.prod.yml $SSH_USER@$SSH_HOST:/app/docker-compose.yml
 
-    - echo "✅ Deployed via docker-compose from Artifactory!"
+    - |
+      cat > .env.deploy << 'ENV_EOF'
+      ARTIFACTORY_DOCKER_REGISTRY=$ARTIFACTORY_DOCKER_REGISTRY
+      CI_COMMIT_SHA=$CI_COMMIT_SHA
+      ARTIFACTORY_USER=$ARTIFACTORY_USER
+      ARTIFACTORY_PASSWORD=$ARTIFACTORY_PASSWORD
+      ENV_EOF
+    - scp -P ${SSH_PORT:-22} .env.deploy $SSH_USER@$SSH_HOST:/app/.env
+
+    - echo ""
+    - echo "🚀 Deploying..."
+    - |
+      ssh -p ${SSH_PORT:-22} $SSH_USER@$SSH_HOST << 'REMOTE_SCRIPT'
+      cd /app
+      export $(cat .env | xargs)
+      docker login -u $ARTIFACTORY_USER -p $ARTIFACTORY_PASSWORD $ARTIFACTORY_DOCKER_REGISTRY
+      docker-compose pull
+      docker-compose up -d
+      docker image prune -f
+      echo "✅ Deploy complete!"
+      REMOTE_SCRIPT
 
   environment:
     name: production
-    url: http://$SSH_HOST:$DEPLOY_PORT
+    url: http://$SSH_HOST
   only:
     - main
   when: manual
@@ -321,57 +315,83 @@ class DeployStageGenerator:
 
     ARTIFACTS_DOCKER_COMPOSE_TEMPLATE = """deploy_production:
   stage: deploy
-  image: docker:24-cli
-  services:
-    - docker:24-dind
+  image: alpine:latest
   dependencies:
     - build
-
-  script:
-    - echo "🚀 Deploy from GitLab Artifacts (Docker tar)"
-    - docker load -i {{ artifact_name }}-image.tar
-    - docker tag {{ artifact_name }}:$CI_COMMIT_SHA {{ artifact_name }}:latest
-
-    # Подготовка SSH
-    - apk add --no-cache openssh-client
-    - eval $(ssh-agent -s)
-    - echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+  before_script:
+    - echo "================================================"
+    - echo "DEPLOY STAGE - GitLab Artifacts → Server"
+    - echo "================================================"
+    - apk add --no-cache openssh-client docker-cli docker-compose
     - mkdir -p ~/.ssh
     - chmod 700 ~/.ssh
-    - echo "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+    - echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+    - chmod 600 ~/.ssh/id_rsa
+    - ssh-keyscan -H $SSH_HOST >> ~/.ssh/known_hosts 2>/dev/null
+  script:
+    - echo ""
+    - echo "📦 Loading Docker images from artifacts..."
+{% if is_monorepo %}
+{% for service in services %}
+    - docker load -i {{ service.name }}-image.tar
+{% endfor %}
+{% else %}
+    - docker load -i {{ project_name }}-image.tar
+{% endif %}
 
-    # Генерация docker-compose.yml
+    - echo ""
+    - echo "🐳 Generating docker-compose.prod.yml..."
     - |
-      cat > docker-compose.yml << EOF
-      version: '3.9'
+      cat > docker-compose.prod.yml << 'COMPOSE_EOF'
+      version: "3.9"
       services:
-      {% if is_monorepo %}
-        {% for service in services %}
+{% if is_monorepo %}
+{% for service in services %}
         {{ service.name }}:
-          image: {{ service.name }}:$CI_COMMIT_SHA
-          build: {{ service.path }}
-        {% endfor %}
-      {% else %}
+          image: {{ service.name }}:${CI_COMMIT_SHA}
+          restart: unless-stopped
+{% endfor %}
+{% else %}
         app:
-          image: {{ artifact_name }}:$CI_COMMIT_SHA
-          build: .
-      {% endif %}
-      EOF
+          image: {{ project_name }}:${CI_COMMIT_SHA}
+          restart: unless-stopped
+          ports:
+            - "3000:3000"
+{% endif %}
+      COMPOSE_EOF
 
-    # Передача compose-файла на сервер
-    - scp docker-compose.yml $SSH_USER@$SSH_HOST:$REMOTE_COMPOSE_DIR/
-    - scp {{ artifact_name }}-image.tar $SSH_USER@$SSH_HOST:/tmp/
-    - ssh "$SSH_USER@$SSH_HOST" "
-        cd $REMOTE_COMPOSE_DIR &&
-        docker load -i /tmp/{{ artifact_name }}-image.tar &&
-        docker compose up -d
-      "
+    - echo ""
+    - echo "📤 Uploading to server..."
+    - scp -P ${SSH_PORT:-22} docker-compose.prod.yml $SSH_USER@$SSH_HOST:/app/docker-compose.yml
+{% if is_monorepo %}
+{% for service in services %}
+    - scp -P ${SSH_PORT:-22} {{ service.name }}-image.tar $SSH_USER@$SSH_HOST:/tmp/
+{% endfor %}
+{% else %}
+    - scp -P ${SSH_PORT:-22} {{ project_name }}-image.tar $SSH_USER@$SSH_HOST:/tmp/
+{% endif %}
 
-    - echo "✅ Deployed from artifacts!"
+    - echo ""
+    - echo "🚀 Deploying..."
+    - |
+      ssh -p ${SSH_PORT:-22} $SSH_USER@$SSH_HOST << 'REMOTE_SCRIPT'
+      cd /app
+{% if is_monorepo %}
+{% for service in services %}
+      docker load -i /tmp/{{ service.name }}-image.tar
+{% endfor %}
+{% else %}
+      docker load -i /tmp/{{ project_name }}-image.tar
+{% endif %}
+      export CI_COMMIT_SHA=$CI_COMMIT_SHA
+      docker-compose up -d
+      docker image prune -f
+      echo "✅ Deploy complete!"
+      REMOTE_SCRIPT
 
   environment:
     name: production
-    url: http://$SSH_HOST:$DEPLOY_PORT
+    url: http://$SSH_HOST
   only:
     - main
   when: manual
@@ -382,33 +402,30 @@ class DeployStageGenerator:
     # --- GitHub Releases ---
 
     NEXUS_TO_GITHUB_TEMPLATE = """release_github:
-  stage: release
+  stage: deploy
   image: alpine:latest
+  before_script:
+    - echo "================================================"
+    - echo "RELEASE STAGE - Nexus → GitHub"
+    - echo "================================================"
+    - apk add --no-cache curl jq github-cli
   script:
-    - apk add --no-cache curl jq
-    
+    - echo ""
     - echo "⬇️  Downloading artifact from Nexus..."
     - curl -u $NEXUS_USER:$NEXUS_PASSWORD -o {{ artifact_name }} \\
         "$NEXUS_URL/repository/$NEXUS_REPOSITORY/$CI_PROJECT_NAME/$CI_COMMIT_TAG/{{ artifact_name }}"
-    
+
+    - echo ""
     - echo "📦 Creating GitHub Release..."
-    - |
-      RELEASE_ID=$(curl -X POST \\
-        -H "Authorization: token $GITHUB_TOKEN" \\
-        https://api.github.com/repos/$GITHUB_REPO/releases \\
-        -d '{"tag_name": "'$CI_COMMIT_TAG'", "name": "Release '$CI_COMMIT_TAG'", "body": "Automated release"}' \\
-        | jq -r '.id')
-    
-    - echo "⬆️  Uploading artifact to GitHub..."
-    - |
-      curl -X POST \\
-        -H "Authorization: token $GITHUB_TOKEN" \\
-        -H "Content-Type: application/octet-stream" \\
-        --data-binary @{{ artifact_name }} \\
-        "https://uploads.github.com/repos/$GITHUB_REPO/releases/$RELEASE_ID/assets?name={{ artifact_name }}"
-    
+    - gh release create $CI_COMMIT_TAG \\
+        --repo $GITHUB_REPO \\
+        --title "Release $CI_COMMIT_TAG" \\
+        --notes "Automated release from GitLab CI/CD" \\
+        {{ artifact_name }}
+
+    - echo ""
     - echo "✅ GitHub Release published!"
-  
+
   only:
     - tags
   when: manual
@@ -417,33 +434,30 @@ class DeployStageGenerator:
 """
 
     ARTIFACTORY_TO_GITHUB_TEMPLATE = """release_github:
-  stage: release
+  stage: deploy
   image: alpine:latest
+  before_script:
+    - echo "================================================"
+    - echo "RELEASE STAGE - Artifactory → GitHub"
+    - echo "================================================"
+    - apk add --no-cache curl jq github-cli
   script:
-    - apk add --no-cache curl jq
-    
+    - echo ""
     - echo "⬇️  Downloading artifact from Artifactory..."
     - curl -u $ARTIFACTORY_USER:$ARTIFACTORY_PASSWORD -o {{ artifact_name }} \\
         "$ARTIFACTORY_URL/$ARTIFACTORY_REPOSITORY/$CI_PROJECT_NAME/$CI_COMMIT_TAG/{{ artifact_name }}"
-    
+
+    - echo ""
     - echo "📦 Creating GitHub Release..."
-    - |
-      RELEASE_ID=$(curl -X POST \\
-        -H "Authorization: token $GITHUB_TOKEN" \\
-        https://api.github.com/repos/$GITHUB_REPO/releases \\
-        -d '{"tag_name": "'$CI_COMMIT_TAG'", "name": "Release '$CI_COMMIT_TAG'"}' \\
-        | jq -r '.id')
-    
-    - echo "⬆️  Uploading to GitHub..."
-    - |
-      curl -X POST \\
-        -H "Authorization: token $GITHUB_TOKEN" \\
-        -H "Content-Type: application/octet-stream" \\
-        --data-binary @{{ artifact_name }} \\
-        "https://uploads.github.com/repos/$GITHUB_REPO/releases/$RELEASE_ID/assets?name={{ artifact_name }}"
-    
+    - gh release create $CI_COMMIT_TAG \\
+        --repo $GITHUB_REPO \\
+        --title "Release $CI_COMMIT_TAG" \\
+        --notes "Automated release from GitLab CI/CD" \\
+        {{ artifact_name }}
+
+    - echo ""
     - echo "✅ GitHub Release published!"
-  
+
   only:
     - tags
   when: manual
@@ -452,31 +466,27 @@ class DeployStageGenerator:
 """
 
     ARTIFACTS_TO_GITHUB_TEMPLATE = """release_github:
-  stage: release
+  stage: deploy
   image: alpine:latest
   dependencies:
     - build
+  before_script:
+    - echo "================================================"
+    - echo "RELEASE STAGE - GitLab Artifacts → GitHub"
+    - echo "================================================"
+    - apk add --no-cache github-cli
   script:
-    - apk add --no-cache curl jq
-    
+    - echo ""
     - echo "📦 Creating GitHub Release..."
-    - |
-      RELEASE_ID=$(curl -X POST \\
-        -H "Authorization: token $GITHUB_TOKEN" \\
-        https://api.github.com/repos/$GITHUB_REPO/releases \\
-        -d '{"tag_name": "'$CI_COMMIT_TAG'", "name": "Release '$CI_COMMIT_TAG'", "body": "Automated release from GitLab CI"}' \\
-        | jq -r '.id')
-    
-    - echo "⬆️  Uploading artifact to GitHub..."
-    - |
-      curl -X POST \\
-        -H "Authorization: token $GITHUB_TOKEN" \\
-        -H "Content-Type: application/octet-stream" \\
-        --data-binary @{{ artifact_name }} \\
-        "https://uploads.github.com/repos/$GITHUB_REPO/releases/$RELEASE_ID/assets?name={{ artifact_name }}"
-    
+    - gh release create $CI_COMMIT_TAG \\
+        --repo $GITHUB_REPO \\
+        --title "Release $CI_COMMIT_TAG" \\
+        --notes "Automated release from GitLab CI/CD" \\
+        {{ artifact_name }}
+
+    - echo ""
     - echo "✅ GitHub Release published!"
-  
+
   only:
     - tags
   when: manual
@@ -485,6 +495,8 @@ class DeployStageGenerator:
 """
 
     DOCKER_TO_GITHUB_WARNING_TEMPLATE = """# ⚠️  WARNING: docker-registry + github-releases — необычная комбинация!
-# Рекомендуется использовать --sync nexus/artifactory/gitlab-artifacts
-# Если всё же нужно, образ будет сохранён как .tar файл
+# Docker образы обычно не публикуются в GitHub Releases
+# Рекомендуется:
+#   - Для артефактов: --sync nexus/artifactory/gitlab-artifacts
+#   - Для Docker: держать в Docker Registry
 """

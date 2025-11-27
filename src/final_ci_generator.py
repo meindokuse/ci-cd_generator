@@ -73,8 +73,8 @@ class FinalCIGenerator:
         # решаете в main.py, как узнавать, есть ли docker-compose.yml
         # пока можно просто передать False (без compose),
         # но лучше прокинуть флаг снаружи
-        deploy_gen = DeployStageGenerator(self.config, use_compose=False)
-        self.stages['deploy'] = deploy_gen.get_output_string()
+        deploy_gen = DeployStageGenerator(self.config,self.sync_target,self.deploy_target)
+        self.stages['deploy'] = deploy_gen.generate()
 
 
         print("\n✅ Все stage'и готовы\n")

@@ -5,7 +5,10 @@ from jinja2 import Template
 
 
 class SonarQubeStageGenerator:
-    """Генератор SonarQube stage для детального анализа кода"""
+    """
+    Генератор SonarQube stage.
+    SonarQube автоматически анализирует и выводит реальный стек проекта.
+    """
 
     SONARQUBE_TEMPLATE = """sonarqube:
   stage: sonarqube
@@ -17,37 +20,125 @@ class SonarQubeStageGenerator:
     - echo "================================================"
     - echo "SONARQUBE ANALYSIS - {{ language }} {{ version }}"
     - echo "================================================"
-    - echo "📊 SonarQube will analyze:"
-    - echo "   - Code Quality"
-    - echo "   - Code Smells"
-    - echo "   - Bugs"
-    - echo "   - Security Vulnerabilities"
-    - echo "   - Code Coverage"
-    - echo "   - Duplications"
-    - echo "   - Technical Debt"
+    - echo "🔍 SonarQube will automatically detect and analyze:"
+    - echo "   ✓ Programming languages"
+    - echo "   ✓ Frameworks (Django, Spring, React, etc.)"
+    - echo "   ✓ Libraries and dependencies"
+    - echo "   ✓ Security vulnerabilities (CVE)"
+    - echo "   ✓ Code quality issues"
+    - echo "   ✓ Technical debt"
     - echo ""
   script:
-    - echo "🔍 Running SonarQube Scanner..."
+    - echo "🔍 Starting SonarQube Scanner..."
+    - echo ""
+
+    # Запуск SonarQube с выводом
     - sonar-scanner
       -Dsonar.projectKey=$CI_PROJECT_NAME
-      -Dsonar.projectName=$CI_PROJECT_NAME
+      -Dsonar.projectName="$CI_PROJECT_NAME"
       -Dsonar.projectVersion=$CI_COMMIT_SHORT_SHA
       -Dsonar.sources=.
       -Dsonar.host.url=$SONAR_HOST_URL
       -Dsonar.login=$SONAR_TOKEN
+      -Dsonar.verbose=false
       {{ language_specific_params }}
+
     - echo ""
     - echo "✅ SonarQube analysis completed!"
-    - echo "📊 View detailed report at: $SONAR_HOST_URL/dashboard?id=$CI_PROJECT_NAME"
+    - echo ""
+
+    # Получаем реальные данные из SonarQube API
+    - echo "📊 FETCHING PROJECT ANALYSIS RESULTS..."
+    - echo ""
+
+    # Установка curl и jq для парсинга JSON
+    - apk add --no-cache curl jq
+
+    # Получаем метрики проекта через API
+    - |
+      echo "🔍 Detected Technologies and Stack:"
+      echo ""
+
+      # Получаем основные метрики
+      METRICS=$(curl -s -u $SONAR_TOKEN: \
+        "$SONAR_HOST_URL/api/measures/component?component=$CI_PROJECT_NAME&metricKeys=ncloc,files,functions,classes,complexity,vulnerabilities,bugs,code_smells,coverage,duplicated_lines_density")
+
+      # Парсим и выводим
+      NCLOC=$(echo $METRICS | jq -r '.component.measures[] | select(.metric=="ncloc") | .value')
+      FILES=$(echo $METRICS | jq -r '.component.measures[] | select(.metric=="files") | .value')
+      FUNCTIONS=$(echo $METRICS | jq -r '.component.measures[] | select(.metric=="functions") | .value')
+      CLASSES=$(echo $METRICS | jq -r '.component.measures[] | select(.metric=="classes") | .value')
+      COMPLEXITY=$(echo $METRICS | jq -r '.component.measures[] | select(.metric=="complexity") | .value')
+      VULNERABILITIES=$(echo $METRICS | jq -r '.component.measures[] | select(.metric=="vulnerabilities") | .value')
+      BUGS=$(echo $METRICS | jq -r '.component.measures[] | select(.metric=="bugs") | .value')
+      CODE_SMELLS=$(echo $METRICS | jq -r '.component.measures[] | select(.metric=="code_smells") | .value')
+      COVERAGE=$(echo $METRICS | jq -r '.component.measures[] | select(.metric=="coverage") | .value')
+      DUPLICATIONS=$(echo $METRICS | jq -r '.component.measures[] | select(.metric=="duplicated_lines_density") | .value')
+
+      echo "📈 CODE METRICS:"
+      echo "   Lines of Code: $NCLOC"
+      echo "   Files: $FILES"
+      echo "   Functions: $FUNCTIONS"
+      echo "   Classes: $CLASSES"
+      echo "   Complexity: $COMPLEXITY"
+      echo ""
+
+      echo "🐛 ISSUES FOUND:"
+      echo "   Vulnerabilities: $VULNERABILITIES"
+      echo "   Bugs: $BUGS"
+      echo "   Code Smells: $CODE_SMELLS"
+      echo ""
+
+      echo "📊 QUALITY METRICS:"
+      echo "   Coverage: $COVERAGE%"
+      echo "   Duplications: $DUPLICATIONS%"
+      echo ""
+
+    # Получаем список языков проекта
+    - |
+      echo "💻 DETECTED LANGUAGES:"
+      LANGUAGES=$(curl -s -u $SONAR_TOKEN: \
+        "$SONAR_HOST_URL/api/measures/component?component=$CI_PROJECT_NAME&metricKeys=ncloc_language_distribution")
+
+      echo $LANGUAGES | jq -r '.component.measures[] | select(.metric=="ncloc_language_distribution") | .value' | tr ';' '\n' | while read line; do
+        echo "   • $line"
+      done
+      echo ""
+
+    # Получаем список issues (реальные проблемы)
+    - |
+      echo "🔒 SECURITY & QUALITY ISSUES:"
+      ISSUES=$(curl -s -u $SONAR_TOKEN: \
+        "$SONAR_HOST_URL/api/issues/search?componentKeys=$CI_PROJECT_NAME&ps=5&types=VULNERABILITY,BUG&severities=CRITICAL,MAJOR")
+
+      echo $ISSUES | jq -r '.issues[] | "   • [\(.severity)] \(.message) (\(.component | split(":")[1]):\(.line))"' | head -10
+      echo ""
+
+    # Ссылка на полный отчет
+    - echo "================================================"
+    - echo "📊 FULL DETAILED REPORT:"
+    - echo "   👉 $SONAR_HOST_URL/dashboard?id=$CI_PROJECT_NAME"
+    - echo ""
+    - echo "This report includes:"
+    - echo "   • Complete technology stack detection"
+    - echo "   • All detected frameworks and libraries"
+    - echo "   • Security vulnerabilities with CVE references"
+    - echo "   • Code quality breakdown by file"
+    - echo "   • Technical debt estimation"
+    - echo "================================================"
+
   after_script:
     - echo ""
     - echo "================================================"
-    - echo "SONARQUBE SUMMARY"
+    - echo "SONARQUBE ANALYSIS COMPLETE"
     - echo "================================================"
     - echo "Project: $CI_PROJECT_NAME"
     - echo "Version: $CI_COMMIT_SHORT_SHA"
-    - echo "Dashboard: $SONAR_HOST_URL/dashboard?id=$CI_PROJECT_NAME"
+    - echo ""
+    - echo "🔗 View full analysis:"
+    - echo "   $SONAR_HOST_URL/dashboard?id=$CI_PROJECT_NAME"
     - echo "================================================"
+
   allow_failure: true
   only:
     - main
@@ -64,7 +155,7 @@ class SonarQubeStageGenerator:
         'python': """-Dsonar.language=py
       -Dsonar.python.version=3
       -Dsonar.sources=.
-      -Dsonar.exclusions=**/tests/**,**/__pycache__/**,**/venv/**,**/.venv/**
+      -Dsonar.exclusions=**/tests/**,**/__pycache__/**,**/venv/**,**/.venv/**,**/migrations/**
       -Dsonar.python.coverage.reportPaths=coverage.xml
       -Dsonar.python.xunit.reportPath=test-results.xml""",
 
@@ -77,14 +168,14 @@ class SonarQubeStageGenerator:
         'node': """-Dsonar.language=js
       -Dsonar.sources=src
       -Dsonar.tests=test,tests,__tests__
-      -Dsonar.exclusions=**/node_modules/**,**/dist/**,**/coverage/**,**/*.test.js
+      -Dsonar.exclusions=**/node_modules/**,**/dist/**,**/coverage/**,**/build/**,**/*.test.js
       -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
       -Dsonar.testExecutionReportPaths=test-results.xml""",
 
         'typescript': """-Dsonar.language=ts
       -Dsonar.sources=src
       -Dsonar.tests=test,tests,__tests__
-      -Dsonar.exclusions=**/node_modules/**,**/dist/**,**/coverage/**,**/*.test.ts,**/*.spec.ts
+      -Dsonar.exclusions=**/node_modules/**,**/dist/**,**/coverage/**,**/build/**,**/*.test.ts,**/*.spec.ts
       -Dsonar.typescript.lcov.reportPaths=coverage/lcov.info
       -Dsonar.testExecutionReportPaths=test-results.xml""",
 
@@ -109,14 +200,16 @@ class SonarQubeStageGenerator:
         self.language = language
         self.version = version
         print(f"  → Генерирую SONARQUBE stage для {language}:{version}")
-        print(f"     ✅ Детальный анализ: Code Quality, Security, Coverage, Duplications")
+        print(f"     ✅ SonarQube автоматически определит полный стек проекта")
+        print(f"     ✅ Вывод реальных метрик через SonarQube API")
 
     def generate(self) -> str:
         template = Template(self.SONARQUBE_TEMPLATE)
         language_params = self.LANGUAGE_PARAMS.get(self.language, "")
 
         if not language_params:
-            print(f"     ⚠️  Нет SonarQube конфигурации для {self.language}")
+            print(f"     ⚠️  Нет специфичной конфигурации для {self.language}")
+            print(f"     ℹ️  SonarQube всё равно проанализирует проект")
 
         return template.render(
             language=self.language,
