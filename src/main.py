@@ -146,6 +146,7 @@ def main():
 
     try:
         analyzer = ProjectAnalyzer(project_path, docker_gen=args.docker_gen)
+        print("dssdsdsdfsdfsdbfhsjNJDFHSBFSDKJFNSBDFHS ",project_path)
         summary = analyzer.get_summary()
 
         print(f"\n✅ Язык: {summary['language']}")

@@ -1,9 +1,9 @@
-from test_analyzer import * 
+from test_analyzer import *
 from jinja2 import Template
 
 
 class TestStageGenerator:
-    TEST_TEMPLATE = '''test:
+    TEST_TEMPLATE = """test:
   stage: test
   image: {{ img }}
   script:
@@ -23,31 +23,35 @@ class TestStageGenerator:
 {% if artifacts %}{% for cmd in artifacts %}
       - {{ cmd }}{% endfor %}{% endif %}
     expire_in: 1 week
-'''
-    def __init__(self, language: str, version: str, dockerfile_info: dict):
+"""
+
+    def __init__(
+        self, language: str, version: str, dockerfile_info: dict, project_path="."
+    ):
+
         self.language = language
         self.version = version
         self.dockerfile_info = dockerfile_info
-        self.base_directory = "."
-
+        self.base_directory = project_path
 
     def get_output_string(self) -> str:
-        cmd = get_test_command_for_file(self.base_directory, '')
+        cmd = get_test_command_for_file(self.base_directory, "")
 
-        base_img = self.dockerfile_info['base_images']
+        base_img = self.dockerfile_info["base_images"]
         template = Template(self.TEST_TEMPLATE)
         if len(base_img) >= 2:
             img1 = f"{base_img[0].split(':')[0]}:{self.version}-{base_img[1]}"
         else:
-            img1 = f"python:{self.version}-alpine"
+            img1 = base_img[0]
+
+        # есть хотя бы один базовый образ – используем его как есть
         yaml_output = template.render(
             img=img1,
             run_tests=cmd,
-            artifacts=self.resolve_test_artifacts(''.join(base_img)),
-            clean=self.resolve_cleanup_commands(''.join(base_img))
+            artifacts=self.resolve_test_artifacts("".join(base_img)),
+            clean=self.resolve_cleanup_commands("".join(base_img)),
         )
         return yaml_output
-
 
     def resolve_test_artifacts(self, image: str) -> List[str]:
         """
@@ -60,9 +64,9 @@ class TestStageGenerator:
         if "python" in image:
             return [
                 "test-reports/",
-                "htmlcov/",              # coverage html
-                "coverage.xml",          # coverage xml
-                "pytest.xml",            # junit report
+                "htmlcov/",  # coverage html
+                "coverage.xml",  # coverage xml
+                "pytest.xml",  # junit report
             ]
 
         # --------------------------
@@ -71,9 +75,9 @@ class TestStageGenerator:
         if "node" in image:
             return [
                 "test-reports/",
-                "coverage/",             # jest coverage
+                "coverage/",  # jest coverage
                 "junit.xml",
-                "reports/",              # cypress, mocha
+                "reports/",  # cypress, mocha
             ]
 
         # --------------------------
@@ -83,8 +87,8 @@ class TestStageGenerator:
             return [
                 "target/surefire-reports/",
                 "target/failsafe-reports/",
-                "target/site/jacoco/",       # jacoco coverage html
-                "target/jacoco.exec",        # raw
+                "target/site/jacoco/",  # jacoco coverage html
+                "target/jacoco.exec",  # raw
             ]
 
         # --------------------------
@@ -92,9 +96,9 @@ class TestStageGenerator:
         # --------------------------
         if "gradle" in image:
             return [
-                "build/test-results/test/",          # junit xml
-                "build/reports/tests/test/",         # HTML отчеты
-                "build/reports/jacoco/test/",        # coverage
+                "build/test-results/test/",  # junit xml
+                "build/reports/tests/test/",  # HTML отчеты
+                "build/reports/jacoco/test/",  # coverage
             ]
 
         # --------------------------
@@ -102,7 +106,7 @@ class TestStageGenerator:
         # --------------------------
         if "golang" in image or "go:" in image:
             return [
-                "coverage.out",            # go test -coverprofile
+                "coverage.out",  # go test -coverprofile
                 "test-reports/",
             ]
 
@@ -111,7 +115,7 @@ class TestStageGenerator:
         # --------------------------
         if "dotnet" in image or "mcr.microsoft.com/dotnet" in image:
             return [
-                "TestResults/",            # MSTest/NUnit/XUnit
+                "TestResults/",  # MSTest/NUnit/XUnit
                 "coverage.cobertura.xml",
             ]
 
@@ -120,7 +124,7 @@ class TestStageGenerator:
         # --------------------------
         if "php" in image:
             return [
-                "build/logs/",             # PHPUnit
+                "build/logs/",  # PHPUnit
                 "coverage.xml",
             ]
 
@@ -129,7 +133,7 @@ class TestStageGenerator:
         # --------------------------
         if "ruby" in image:
             return [
-                "coverage/",               # SimpleCov
+                "coverage/",  # SimpleCov
                 "test-reports/",
             ]
 

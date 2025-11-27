@@ -864,5 +864,6 @@ CMD ["rails", "server", "-b", "0.0.0.0", "-p", "3000"]
             'base_image': self.data['base_image'],
             'artifact_paths': self.data.get('artifact_paths'),
             'language_info': self.data['language_info'],
-            'env_summary': self.data['env_summary']
+            'env_summary': self.data['env_summary'],
+            'project_root': self.project_path, 
         }

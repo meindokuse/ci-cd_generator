@@ -37,10 +37,12 @@ class FinalCIGenerator:
 
         # Test (Unit + Integration)
         print("  → Генерирую TEST stages...")
+        print("  → Генерирую TEST stages...")
         test_gen = TestStageGenerator(
             self.config['language'],
             self.config['version'],
             self.config['dockerfile_info'],
+            self.analyzer.project_path,
         )
         self.stages['test'] = test_gen.get_output_string()
 

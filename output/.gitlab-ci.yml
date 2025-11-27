@@ -57,9 +57,9 @@ build:
 # ========== TEST STAGE ==========
 test:
   stage: test
-  image: python:1.24.6-alpine
+  image: golang:1.24.6
   script:
-    - pytest
+    - go test
   after_script:
 
     - rm -f coverage.out || true

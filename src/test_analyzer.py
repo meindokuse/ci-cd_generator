@@ -56,10 +56,10 @@ class ProjectInfo:
         self.confidence = confidence
 
 class TestFramework:
-    def __init__(self, base_path: str):
-        self.base_path = Path(base_path)
-        self.test_files = []
-        self.projects = []
+    def __init__(self, project_path: str = "."):
+        self.base_path = Path(project_path)
+        self.test_files: List[Path] = []
+        self.projects: List[ProjectInfo] = []
         
     def discover_projects(self) -> List[ProjectInfo]:
         """Находит все проекты в базовой директории"""
