@@ -248,7 +248,7 @@ def main():
     print("\nШАГ 5: Сохранение")
     print("-" * 70)
 
-    output_dir = args.output
+    output_dir = '/output'
     os.makedirs(output_dir, exist_ok=True)
 
     # Сохраняем .gitlab-ci.yml

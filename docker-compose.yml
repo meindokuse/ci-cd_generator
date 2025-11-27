@@ -1,6 +1,3 @@
-# docker-compose.yml
-
-version: "3.9"
 
 services:
 
@@ -12,7 +9,7 @@ services:
     ports:
       - "80:80"
       - "443:443"
-      - "2222:22"
+      - "8080:8080"
     volumes:
       - gitlab_config:/etc/gitlab
       - gitlab_logs:/var/log/gitlab

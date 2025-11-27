@@ -83,6 +83,23 @@ class DeployStageGenerator:
         # Для single service используем имя проекта
         project_name = self.config.get("language", "app")
 
+        # Обработка env_summary
+        env_summary = self.config.get("env_summary", {})
+        env_vars = []
+        if env_summary.get("variables"):
+            for var_name, var_info in env_summary["variables"].items():
+                # Берём только runtime-переменные
+                if var_info["type"] in [
+                    "secret",
+                    "database",
+                    "url",
+                    "runtime_config",
+                    "config",
+                    "port",
+                    "general",
+                ]:
+                    env_vars.append(var_name)
+
         # Параметры для рендеринга
         params = {
             "language": language,
@@ -91,8 +108,8 @@ class DeployStageGenerator:
             "is_monorepo": is_monorepo,
             "artifact_name": artifact_name,
             "project_name": project_name,
+            "env_vars": env_vars,
         }
-
         template = Template(template_str)
         return template.render(**params)
 
@@ -125,6 +142,12 @@ class DeployStageGenerator:
         {{ service.name }}:
           image: ${CI_REGISTRY_IMAGE}/{{ service.name }}:${CI_COMMIT_SHA}
           restart: unless-stopped
+{% if env_vars %}
+          environment:
+{% for var_name in env_vars %}
+            - {{ var_name }}=${{ var_name }}
+{% endfor %}
+{% endif %}
 {% endfor %}
 {% else %}
         app:
@@ -132,6 +155,12 @@ class DeployStageGenerator:
           restart: unless-stopped
           ports:
             - "3000:3000"
+{% if env_vars %}
+          environment:
+{% for var_name in env_vars %}
+            - {{ var_name }}=${{ var_name }}
+{% endfor %}
+{% endif %}
 {% endif %}
       COMPOSE_EOF
 
@@ -145,6 +174,12 @@ class DeployStageGenerator:
       cat > .env.deploy << 'ENV_EOF'
       CI_REGISTRY_IMAGE=$CI_REGISTRY_IMAGE
       CI_COMMIT_SHA=$CI_COMMIT_SHA
+{% if env_vars %}
+      # Runtime environment variables
+{% for var_name in env_vars %}
+      {{ var_name }}=${{ var_name }}
+{% endfor %}
+{% endif %}
       ENV_EOF
     - scp -P ${SSH_PORT:-22} .env.deploy $SSH_USER@$SSH_HOST:/app/.env
 
@@ -196,6 +231,12 @@ class DeployStageGenerator:
         {{ service.name }}:
           image: ${NEXUS_DOCKER_REGISTRY}/{{ service.name }}:${CI_COMMIT_SHA}
           restart: unless-stopped
+{% if env_vars %}
+          environment:
+{% for var_name in env_vars %}
+            - {{ var_name }}=${{ var_name }}
+{% endfor %}
+{% endif %}
 {% endfor %}
 {% else %}
         app:
@@ -203,6 +244,12 @@ class DeployStageGenerator:
           restart: unless-stopped
           ports:
             - "3000:3000"
+{% if env_vars %}
+          environment:
+{% for var_name in env_vars %}
+            - {{ var_name }}=${{ var_name }}
+{% endfor %}
+{% endif %}
 {% endif %}
       COMPOSE_EOF
 
@@ -216,6 +263,12 @@ class DeployStageGenerator:
       CI_COMMIT_SHA=$CI_COMMIT_SHA
       NEXUS_USER=$NEXUS_USER
       NEXUS_PASSWORD=$NEXUS_PASSWORD
+{% if env_vars %}
+      # Runtime environment variables
+{% for var_name in env_vars %}
+      {{ var_name }}=${{ var_name }}
+{% endfor %}
+{% endif %}
       ENV_EOF
     - scp -P ${SSH_PORT:-22} .env.deploy $SSH_USER@$SSH_HOST:/app/.env
 
@@ -240,6 +293,7 @@ class DeployStageGenerator:
   when: manual
   tags:
     - docker
+
 """
 
     ARTIFACTORY_DOCKER_COMPOSE_TEMPLATE = """deploy_production:
@@ -253,7 +307,7 @@ class DeployStageGenerator:
     - mkdir -p ~/.ssh
     - chmod 700 ~/.ssh
     - echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
-    - chmod 600 ~/.ssh/id_rsa
+    - chmod 600 ~/.ssh
     - ssh-keyscan -H $SSH_HOST >> ~/.ssh/known_hosts 2>/dev/null
   script:
     - echo ""
@@ -267,6 +321,12 @@ class DeployStageGenerator:
         {{ service.name }}:
           image: ${ARTIFACTORY_DOCKER_REGISTRY}/{{ service.name }}:${CI_COMMIT_SHA}
           restart: unless-stopped
+{% if env_vars %}
+          environment:
+{% for var_name in env_vars %}
+            - {{ var_name }}=${{ var_name }}
+{% endfor %}
+{% endif %}
 {% endfor %}
 {% else %}
         app:
@@ -274,6 +334,12 @@ class DeployStageGenerator:
           restart: unless-stopped
           ports:
             - "3000:3000"
+{% if env_vars %}
+          environment:
+{% for var_name in env_vars %}
+            - {{ var_name }}=${{ var_name }}
+{% endfor %}
+{% endif %}
 {% endif %}
       COMPOSE_EOF
 
@@ -287,6 +353,12 @@ class DeployStageGenerator:
       CI_COMMIT_SHA=$CI_COMMIT_SHA
       ARTIFACTORY_USER=$ARTIFACTORY_USER
       ARTIFACTORY_PASSWORD=$ARTIFACTORY_PASSWORD
+{% if env_vars %}
+      # Runtime environment variables
+{% for var_name in env_vars %}
+      {{ var_name }}=${{ var_name }}
+{% endfor %}
+{% endif %}
       ENV_EOF
     - scp -P ${SSH_PORT:-22} .env.deploy $SSH_USER@$SSH_HOST:/app/.env
 
@@ -311,8 +383,8 @@ class DeployStageGenerator:
   when: manual
   tags:
     - docker
-"""
 
+"""
     ARTIFACTS_DOCKER_COMPOSE_TEMPLATE = """deploy_production:
   stage: deploy
   image: alpine:latest
@@ -326,7 +398,7 @@ class DeployStageGenerator:
     - mkdir -p ~/.ssh
     - chmod 700 ~/.ssh
     - echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
-    - chmod 600 ~/.ssh/id_rsa
+    - chmod 600 ~/.ssh
     - ssh-keyscan -H $SSH_HOST >> ~/.ssh/known_hosts 2>/dev/null
   script:
     - echo ""
@@ -350,6 +422,12 @@ class DeployStageGenerator:
         {{ service.name }}:
           image: {{ service.name }}:${CI_COMMIT_SHA}
           restart: unless-stopped
+{% if env_vars %}
+          environment:
+{% for var_name in env_vars %}
+            - {{ var_name }}=${{ var_name }}
+{% endfor %}
+{% endif %}
 {% endfor %}
 {% else %}
         app:
@@ -357,6 +435,12 @@ class DeployStageGenerator:
           restart: unless-stopped
           ports:
             - "3000:3000"
+{% if env_vars %}
+          environment:
+{% for var_name in env_vars %}
+            - {{ var_name }}=${{ var_name }}
+{% endfor %}
+{% endif %}
 {% endif %}
       COMPOSE_EOF
 
@@ -372,6 +456,20 @@ class DeployStageGenerator:
 {% endif %}
 
     - echo ""
+    - echo "📝 Creating .env file..."
+    - |
+      cat > .env.deploy << 'ENV_EOF'
+      CI_COMMIT_SHA=$CI_COMMIT_SHA
+{% if env_vars %}
+      # Runtime environment variables
+{% for var_name in env_vars %}
+      {{ var_name }}=${{ var_name }}
+{% endfor %}
+{% endif %}
+      ENV_EOF
+    - scp -P ${SSH_PORT:-22} .env.deploy $SSH_USER@$SSH_HOST:/app/.env
+
+    - echo ""
     - echo "🚀 Deploying..."
     - |
       ssh -p ${SSH_PORT:-22} $SSH_USER@$SSH_HOST << 'REMOTE_SCRIPT'
@@ -383,7 +481,7 @@ class DeployStageGenerator:
 {% else %}
       docker load -i /tmp/{{ project_name }}-image.tar
 {% endif %}
-      export CI_COMMIT_SHA=$CI_COMMIT_SHA
+      export $(cat .env | xargs)
       docker-compose up -d
       docker image prune -f
       echo "✅ Deploy complete!"
@@ -500,3 +598,4 @@ class DeployStageGenerator:
 #   - Для артефактов: --sync nexus/artifactory/gitlab-artifacts
 #   - Для Docker: держать в Docker Registry
 """
+

@@ -7,7 +7,7 @@ import re
 from typing import Dict, List
 from jinja2 import Template
 
-from src.env_analyzer import EnvAnalyzer
+from env_analyzer import EnvAnalyzer
 
 
 class ProjectAnalyzer:
@@ -864,4 +864,5 @@ CMD ["rails", "server", "-b", "0.0.0.0", "-p", "3000"]
             'base_image': self.data['base_image'],
             'artifact_paths': self.data.get('artifact_paths'),
             'language_info': self.data['language_info'],
+            'env_summary': self.data['env_summary']
         }

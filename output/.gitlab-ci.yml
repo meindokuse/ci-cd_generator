@@ -1,0 +1,433 @@
+stages:
+  - build
+  - test
+  - lint
+  - sonarqube
+  - security
+  - integration
+  - deploy
+
+# ========== ENVIRONMENT VARIABLES ==========
+variables:
+  # Non-sensitive environment variables
+  ENV: "dev"
+  KAFKA_BROKERS: "kafka:9092"
+  KAFKA_TOPIC: "orders"
+  KAFKA_GROUP: "order-service"
+  HTTP_ADDR: ":8080"
+
+  # Sensitive variables (passwords, secrets, keys) should be set in:
+  # GitLab → Settings → CI/CD → Variables
+  # See GITLAB_VARIABLES.md for details
+
+# ========== CI/CD VARIABLES ==========
+variables:
+  DOCKER_IMAGE_TAG: "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
+  DOCKER_IMAGE_LATEST: "$CI_REGISTRY_IMAGE:latest"
+  SSH_PORT: "22"
+  DEPLOY_ENV: "production"
+  SONAR_HOST_URL: "http://sonarqube:9000"
+
+# ========== BUILD STAGE ==========
+build:
+  stage: build
+  image: docker:24-cli
+  services:
+    - docker:24-dind
+  variables:
+    DOCKER_DRIVER: overlay2
+    DOCKER_TLS_CERTDIR: "/certs"
+  before_script:
+    - echo "🔐 Logging into Docker Registry..."
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+  script:
+    - echo "🏗️  Building Docker image..."
+    - docker build --build-arg ENV=$ENV --build-arg DB_HOST=$DB_HOST --build-arg DB_PORT=$DB_PORT --build-arg DB_USER=$DB_USER --build-arg DB_PASSWORD=$DB_PASSWORD --build-arg DB_NAME=$DB_NAME --build-arg KAFKA_BROKERS=$KAFKA_BROKERS --build-arg KAFKA_TOPIC=$KAFKA_TOPIC --build-arg KAFKA_GROUP=$KAFKA_GROUP --build-arg HTTP_ADDR=$HTTP_ADDR --build-arg POSTGRES_USER=$POSTGRES_USER --build-arg POSTGRES_PASSWORD=$POSTGRES_PASSWORD --build-arg POSTGRES_DB=$POSTGRES_DB -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA -t $CI_REGISTRY_IMAGE:latest .
+    - echo "📤 Pushing to Docker Registry..."
+    - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+    - docker push $CI_REGISTRY_IMAGE:latest
+    - echo "✅ Docker image stored in registry"
+  only:
+    - main
+  tags:
+    - docker
+  retry:
+    max: 2
+
+# ========== TEST STAGE ==========
+test:
+  stage: test
+  image: python:1.24.6-alpine
+  script:
+    - pytest
+  after_script:
+
+    - rm -f coverage.out || true
+    - rm -rf test-reports || true
+    - echo 'Go test cleanup done'
+  tags:
+    - docker
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - stuck_or_timeout_failure
+  artifacts:
+    paths:
+
+      - coverage.out
+      - test-reports/
+    expire_in: 1 week
+
+# ========== LINT STAGE ==========
+lint:
+  stage: lint
+  image: golang:1.24.6-alpine
+  before_script:
+    - echo "================================================"
+    - echo "LINT STAGE - Go 1.24.6"
+    - echo "================================================"
+    - echo "📦 Installing golangci-lint..."
+    - apk add --no-cache git
+    - go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+  script:
+    - echo ""
+    - echo "🔍 Running golangci-lint (comprehensive Go linter)..."
+    - $GOPATH/bin/golangci-lint run ./... --timeout=5m || true
+    - echo ""
+    - echo "🔍 Running go vet (official Go tool)..."
+    - go vet ./... || true
+    - echo ""
+    - echo "🔍 Running go fmt check..."
+    - test -z $(gofmt -l .) || (echo "Code not formatted!" && gofmt -d . && exit 1) || true
+    - echo ""
+    - echo "✅ Lint stage completed!"
+  allow_failure: true
+  only:
+    - main
+    - merge_requests
+  tags:
+    - docker
+
+# ========== SONARQUBE STAGE ==========
+sonarqube:
+  stage: sonarqube
+  image: sonarsource/sonar-scanner-cli:latest
+  variables:
+    SONAR_USER_HOME: "${CI_PROJECT_DIR}/.sonar"
+    GIT_DEPTH: "0"
+  before_script:
+    - echo "================================================"
+    - echo "SONARQUBE ANALYSIS - go 1.24.6"
+    - echo "================================================"
+    - echo "🔍 SonarQube will automatically detect and analyze:"
+    - echo "   ✓ Programming languages"
+    - echo "   ✓ Frameworks (Django, Spring, React, etc.)"
+    - echo "   ✓ Libraries and dependencies"
+    - echo "   ✓ Security vulnerabilities (CVE)"
+    - echo "   ✓ Code quality issues"
+    - echo "   ✓ Technical debt"
+    - echo ""
+  script:
+    - echo "🔍 Starting SonarQube Scanner..."
+    - echo ""
+
+    # Запуск SonarQube с выводом
+    - sonar-scanner
+      -Dsonar.projectKey=$CI_PROJECT_NAME
+      -Dsonar.projectName="$CI_PROJECT_NAME"
+      -Dsonar.projectVersion=$CI_COMMIT_SHORT_SHA
+      -Dsonar.sources=.
+      -Dsonar.host.url=$SONAR_HOST_URL
+      -Dsonar.login=$SONAR_TOKEN
+      -Dsonar.verbose=false
+      -Dsonar.language=go
+      -Dsonar.sources=.
+      -Dsonar.exclusions=**/*_test.go,**/vendor/**
+      -Dsonar.go.coverage.reportPaths=coverage.out
+      -Dsonar.go.tests.reportPaths=test-report.json
+
+    - echo ""
+    - echo "✅ SonarQube analysis completed!"
+    - echo ""
+
+    # Получаем реальные данные из SonarQube API
+    - echo "📊 FETCHING PROJECT ANALYSIS RESULTS..."
+    - echo ""
+
+    # Установка curl и jq для парсинга JSON
+    - apk add --no-cache curl jq
+
+    # Получаем метрики проекта через API
+    - |
+      echo "🔍 Detected Technologies and Stack:"
+      echo ""
+
+      # Получаем основные метрики
+      METRICS=$(curl -s -u $SONAR_TOKEN: "$SONAR_HOST_URL/api/measures/component?component=$CI_PROJECT_NAME&metricKeys=ncloc,files,functions,classes,complexity,vulnerabilities,bugs,code_smells,coverage,duplicated_lines_density")
+
+      # Парсим и выводим
+      NCLOC=$(echo $METRICS | jq -r '.component.measures[] | select(.metric=="ncloc") | .value')
+      FILES=$(echo $METRICS | jq -r '.component.measures[] | select(.metric=="files") | .value')
+      FUNCTIONS=$(echo $METRICS | jq -r '.component.measures[] | select(.metric=="functions") | .value')
+      CLASSES=$(echo $METRICS | jq -r '.component.measures[] | select(.metric=="classes") | .value')
+      COMPLEXITY=$(echo $METRICS | jq -r '.component.measures[] | select(.metric=="complexity") | .value')
+      VULNERABILITIES=$(echo $METRICS | jq -r '.component.measures[] | select(.metric=="vulnerabilities") | .value')
+      BUGS=$(echo $METRICS | jq -r '.component.measures[] | select(.metric=="bugs") | .value')
+      CODE_SMELLS=$(echo $METRICS | jq -r '.component.measures[] | select(.metric=="code_smells") | .value')
+      COVERAGE=$(echo $METRICS | jq -r '.component.measures[] | select(.metric=="coverage") | .value')
+      DUPLICATIONS=$(echo $METRICS | jq -r '.component.measures[] | select(.metric=="duplicated_lines_density") | .value')
+
+      echo "📈 CODE METRICS:"
+      echo "   Lines of Code: $NCLOC"
+      echo "   Files: $FILES"
+      echo "   Functions: $FUNCTIONS"
+      echo "   Classes: $CLASSES"
+      echo "   Complexity: $COMPLEXITY"
+      echo ""
+
+      echo "🐛 ISSUES FOUND:"
+      echo "   Vulnerabilities: $VULNERABILITIES"
+      echo "   Bugs: $BUGS"
+      echo "   Code Smells: $CODE_SMELLS"
+      echo ""
+
+      echo "📊 QUALITY METRICS:"
+      echo "   Coverage: $COVERAGE%"
+      echo "   Duplications: $DUPLICATIONS%"
+      echo ""
+
+    # Получаем список языков проекта
+    - |
+      echo "💻 DETECTED LANGUAGES:"
+      LANGUAGES=$(curl -s -u $SONAR_TOKEN: "$SONAR_HOST_URL/api/measures/component?component=$CI_PROJECT_NAME&metricKeys=ncloc_language_distribution")
+
+      echo $LANGUAGES | jq -r '.component.measures[] | select(.metric=="ncloc_language_distribution") | .value' | tr ';' '\n' | while read line; do
+        echo "   • $line"
+      done
+      echo ""
+
+    # Получаем список issues (реальные проблемы)
+    - |
+      echo "🔒 SECURITY & QUALITY ISSUES:"
+      ISSUES=$(curl -s -u $SONAR_TOKEN: "$SONAR_HOST_URL/api/issues/search?componentKeys=$CI_PROJECT_NAME&ps=5&types=VULNERABILITY,BUG&severities=CRITICAL,MAJOR")
+
+      echo $ISSUES | jq -r '.issues[] | "   • [\(.severity)] \(.message) (\(.component | split(\":\")[1]):\(.line))"' | head -10
+      echo ""
+
+    # Ссылка на полный отчет
+    - echo "================================================"
+    - echo "📊 FULL DETAILED REPORT:"
+    - echo "   👉 $SONAR_HOST_URL/dashboard?id=$CI_PROJECT_NAME"
+    - echo ""
+    - echo "This report includes:"
+    - echo "   • Complete technology stack detection"
+    - echo "   • All detected frameworks and libraries"
+    - echo "   • Security vulnerabilities with CVE references"
+    - echo "   • Code quality breakdown by file"
+    - echo "   • Technical debt estimation"
+    - echo "================================================"
+
+  after_script:
+    - echo ""
+    - echo "================================================"
+    - echo "SONARQUBE ANALYSIS COMPLETE"
+    - echo "================================================"
+    - echo "Project: $CI_PROJECT_NAME"
+    - echo "Version: $CI_COMMIT_SHORT_SHA"
+    - echo ""
+    - echo "🔗 View full analysis:"
+    - echo "   $SONAR_HOST_URL/dashboard?id=$CI_PROJECT_NAME"
+    - echo "================================================"
+
+  allow_failure: true
+  only:
+    - main
+    - merge_requests
+  tags:
+    - docker
+  cache:
+    key: "${CI_COMMIT_REF_SLUG}-sonar"
+    paths:
+      - .sonar/cache
+
+# ========== SECURITY STAGE ==========
+security:
+  stage: security
+  image: golang:1.24.6-alpine
+  before_script:
+    - echo "================================================"
+    - echo "SECURITY STAGE - Go 1.24.6"
+    - echo "================================================"
+    - echo "📦 Installing gosec (security scanner)..."
+    - go install github.com/securego/gosec/v2/cmd/gosec@latest
+  script:
+    - echo ""
+    - echo "🔒 Running gosec (Go security checker)..."
+    - $GOPATH/bin/gosec -fmt=json -out=gosec-report.json ./... || true
+    - $GOPATH/bin/gosec ./... || true
+    - echo ""
+    - echo "✅ Security scan completed!"
+  artifacts:
+    reports:
+      sast: gosec-report.json
+    expire_in: 1 week
+  allow_failure: true
+  only:
+    - main
+    - merge_requests
+  tags:
+    - docker
+
+security_docker:
+  stage: security
+  image: aquasec/trivy:latest
+  before_script:
+    - echo "================================================"
+    - echo "DOCKER IMAGE SECURITY SCAN"
+    - echo "================================================"
+  script:
+    - echo ""
+    - echo "🔒 Scanning Docker image with Trivy..."
+    - trivy image --exit-code 0 --severity HIGH,CRITICAL --format table $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+    - echo ""
+    - echo "🔒 Generating JSON report..."
+    - trivy image --exit-code 0 --severity HIGH,CRITICAL --format json --output trivy-report.json $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA || true
+    - echo ""
+    - echo "✅ Docker image scan completed!"
+  artifacts:
+    paths:
+      - trivy-report.json
+    expire_in: 1 week
+  allow_failure: true
+  only:
+    - main
+  tags:
+    - docker
+
+
+# ========== DEPLOY STAGE ==========
+deploy_production:
+  stage: deploy
+  image: alpine:latest
+  before_script:
+    - echo "================================================"
+    - echo "DEPLOY STAGE - Docker Registry → Server"
+    - echo "================================================"
+    - apk add --no-cache openssh-client docker-cli docker-compose
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+    - chmod 600 ~/.ssh/id_rsa
+    - ssh-keyscan -H $SSH_HOST >> ~/.ssh/known_hosts 2>/dev/null
+  script:
+    - echo ""
+    - echo "🐳 Generating docker-compose.prod.yml..."
+    - |
+      cat > docker-compose.prod.yml << 'COMPOSE_EOF'
+      version: "3.9"
+      services:
+
+        app:
+          image: ${CI_REGISTRY_IMAGE}:${CI_COMMIT_SHA}
+          restart: unless-stopped
+          ports:
+            - "3000:3000"
+
+          environment:
+
+            - ENV=$ENV
+
+            - DB_HOST=$DB_HOST
+
+            - DB_PORT=$DB_PORT
+
+            - DB_USER=$DB_USER
+
+            - DB_PASSWORD=$DB_PASSWORD
+
+            - DB_NAME=$DB_NAME
+
+            - KAFKA_BROKERS=$KAFKA_BROKERS
+
+            - KAFKA_TOPIC=$KAFKA_TOPIC
+
+            - KAFKA_GROUP=$KAFKA_GROUP
+
+            - HTTP_ADDR=$HTTP_ADDR
+
+            - POSTGRES_USER=$POSTGRES_USER
+
+            - POSTGRES_PASSWORD=$POSTGRES_PASSWORD
+
+            - POSTGRES_DB=$POSTGRES_DB
+
+
+
+      COMPOSE_EOF
+
+    - echo ""
+    - echo "📤 Uploading docker-compose.prod.yml to server..."
+    - scp -P ${SSH_PORT:-22} docker-compose.prod.yml $SSH_USER@$SSH_HOST:/app/docker-compose.yml
+
+    - echo ""
+    - echo "📝 Creating .env file..."
+    - |
+      cat > .env.deploy << 'ENV_EOF'
+      CI_REGISTRY_IMAGE=$CI_REGISTRY_IMAGE
+      CI_COMMIT_SHA=$CI_COMMIT_SHA
+
+      # Runtime environment variables
+
+      ENV=$ENV
+
+      DB_HOST=$DB_HOST
+
+      DB_PORT=$DB_PORT
+
+      DB_USER=$DB_USER
+
+      DB_PASSWORD=$DB_PASSWORD
+
+      DB_NAME=$DB_NAME
+
+      KAFKA_BROKERS=$KAFKA_BROKERS
+
+      KAFKA_TOPIC=$KAFKA_TOPIC
+
+      KAFKA_GROUP=$KAFKA_GROUP
+
+      HTTP_ADDR=$HTTP_ADDR
+
+      POSTGRES_USER=$POSTGRES_USER
+
+      POSTGRES_PASSWORD=$POSTGRES_PASSWORD
+
+      POSTGRES_DB=$POSTGRES_DB
+
+
+      ENV_EOF
+    - scp -P ${SSH_PORT:-22} .env.deploy $SSH_USER@$SSH_HOST:/app/.env
+
+    - echo ""
+    - echo "🚀 Deploying on server..."
+    - |
+      ssh -p ${SSH_PORT:-22} $SSH_USER@$SSH_HOST << 'REMOTE_SCRIPT'
+      cd /app
+      export $(cat .env | xargs)
+      docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+      docker-compose pull
+      docker-compose up -d
+      docker image prune -f
+      echo "✅ Deploy complete!"
+      REMOTE_SCRIPT
+
+  environment:
+    name: production
+    url: http://$SSH_HOST
+  only:
+    - main
+  when: manual
+  tags:
+    - docker
+

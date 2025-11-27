@@ -36,8 +36,12 @@ class TestStageGenerator:
 
         base_img = self.dockerfile_info['base_images']
         template = Template(self.TEST_TEMPLATE)
+        if len(base_img) >= 2:
+            img1 = f"{base_img[0].split(':')[0]}:{self.version}-{base_img[1]}"
+        else:
+            img1 = f"python:{self.version}-alpine"
         yaml_output = template.render(
-            img=f"{base_img[0].split(':')[0]}:{self.version}-{base_img[1]}",
+            img=img1,
             run_tests=cmd,
             artifacts=self.resolve_test_artifacts(''.join(base_img)),
             clean=self.resolve_cleanup_commands(''.join(base_img))
