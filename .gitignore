@@ -5,3 +5,4 @@ venv/
 
 main.spec
 *.spec
+.output/
