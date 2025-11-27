@@ -39,7 +39,6 @@ class FinalCIGenerator:
         test_gen = TestStageGenerator(
             self.config['language'],
             self.config['version'],
-            has_docker_compose=self.config.get('docker_compose_exists', False)
         )
         self.stages['test'] = test_gen.get_output_string()
 
