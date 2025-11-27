@@ -1,4 +1,4 @@
-# project_analyzer.py
+# src/project_analyzer.py
 
 import os
 import glob
@@ -6,6 +6,8 @@ import json
 import re
 from typing import Dict, List
 from jinja2 import Template
+
+from src.env_analyzer import EnvAnalyzer
 
 
 class ProjectAnalyzer:
@@ -47,6 +49,53 @@ class ProjectAnalyzer:
         'ruby': {
             'high': ['Gemfile'],
             'medium': ['*.rb']
+        },
+    }
+
+    # Фреймворки для каждого языка
+    FRAMEWORK_DETECTION = {
+        'python': {
+            'Django': ['django', 'Django'],
+            'Flask': ['flask', 'Flask'],
+            'FastAPI': ['fastapi', 'FastAPI'],
+            'Tornado': ['tornado'],
+            'Pyramid': ['pyramid'],
+        },
+        'go': {
+            'Gin': ['gin-gonic/gin', 'github.com/gin-gonic/gin'],
+            'Echo': ['labstack/echo', 'github.com/labstack/echo'],
+            'Fiber': ['gofiber/fiber', 'github.com/gofiber/fiber'],
+            'Chi': ['go-chi/chi', 'github.com/go-chi/chi'],
+            'Beego': ['beego/beego', 'github.com/beego/beego'],
+            'Gorilla Mux': ['gorilla/mux', 'github.com/gorilla/mux'],
+        },
+        'node': {
+            'Express': ['express'],
+            'NestJS': ['@nestjs/core'],
+            'Koa': ['koa'],
+            'Fastify': ['fastify'],
+            'Next.js': ['next'],
+        },
+        'typescript': {
+            'Express': ['express'],
+            'NestJS': ['@nestjs/core'],
+            'Angular': ['@angular/core'],
+            'React': ['react'],
+            'Vue': ['vue'],
+            'Next.js': ['next'],
+        },
+        'java': {
+            'Spring Boot': ['spring-boot', 'org.springframework.boot'],
+            'Spring': ['springframework'],
+            'Quarkus': ['quarkus'],
+            'Micronaut': ['micronaut'],
+            'Vert.x': ['vertx'],
+        },
+        'kotlin': {
+            'Spring Boot': ['spring-boot'],
+            'Ktor': ['ktor', 'io.ktor'],
+            'Micronaut': ['micronaut'],
+            'Quarkus': ['quarkus'],
         },
     }
 
@@ -224,12 +273,18 @@ CMD ["rails", "server", "-b", "0.0.0.0", "-p", "3000"]
         # 2. Определяем версию
         self.data['version'] = self._detect_version(language)
 
-        # 3. Проверяем Dockerfile
+        # 3. Определяем фреймворк
+        self.data['framework'] = self._detect_framework(language)
+
+        # 4. Определяем топ зависимостей
+        self.data['dependencies'] = self._detect_dependencies(language)
+
+        # 5. Проверяем Dockerfile
         self.data['dockerfile_exists'] = os.path.exists(
             os.path.join(self.project_path, "Dockerfile")
         )
 
-        # 4. Проверяем docker-compose.yml
+        # 6. Проверяем docker-compose.yml
         self.data['docker_compose_exists'] = self._check_docker_compose()
 
         if self.data['docker_compose_exists']:
@@ -251,13 +306,13 @@ CMD ["rails", "server", "-b", "0.0.0.0", "-p", "3000"]
             self.data['is_monorepo'] = False
             self.data['services'] = []
 
-        # 5. Генерируем Dockerfile если нужно
+        # 7. Генерируем Dockerfile если нужно
         if not self.data['dockerfile_exists'] and self.docker_gen:
             print(f"   🔨 Генерирую Dockerfile для {language}:{self.data['version']}...")
             self._generate_dockerfile(language)
             self.data['dockerfile_exists'] = True
 
-        # 6. Определяем базовый образ
+        # 8. Определяем базовый образ
         if self.data['dockerfile_exists']:
             self.data['dockerfile_info'] = self._parse_dockerfile()
             self.data['base_image'] = self.data['dockerfile_info']['final_image']
@@ -265,16 +320,187 @@ CMD ["rails", "server", "-b", "0.0.0.0", "-p", "3000"]
             self.data['dockerfile_info'] = None
             self.data['base_image'] = self._get_build_image(language)
 
-        # 7. Определяем артефакты
+        # 9. Определяем артефакты
         self.data['artifact_paths'] = self._detect_artifact_paths(language)
 
+        # ========== 10. НОВОЕ: Анализируем переменные окружения ==========
+        self.env_analyzer = EnvAnalyzer(self.project_path)
+        self.data['env_summary'] = self.env_analyzer.get_summary()
+
+        # ============ РАСШИРЕННЫЙ ВЫВОД ============
+        print(f"\n{'=' * 70}")
+        print("📋 АНАЛИЗ ПРОЕКТА")
+        print(f"{'=' * 70}")
         print(f"✅ Язык: {language}")
         print(f"✅ Версия: {self.data['version']}")
+
+        # Вывод фреймворка
+        if self.data.get('framework'):
+            print(f"✅ Фреймворк: {self.data['framework']}")
+        else:
+            print(f"⚠️  Фреймворк: Не обнаружен (будет определён SonarQube)")
+
+        # Вывод топ зависимостей
+        if self.data.get('dependencies'):
+            deps_count = len(self.data['dependencies'])
+            print(f"✅ Основные зависимости ({deps_count}):")
+            for dep in self.data['dependencies'][:5]:
+                print(f"   → {dep}")
+            if deps_count > 5:
+                print(f"   ... и ещё {deps_count - 5}")
+
         print(f"✅ Dockerfile: {'Найден ✅' if self.data['dockerfile_exists'] else 'Не найден ❌'}")
         print(f"✅ docker-compose.yml: {'Найден ✅' if self.data['docker_compose_exists'] else 'Не найден ❌'}")
+
         if self.data.get('is_monorepo'):
             print(f"✅ Тип проекта: Monorepo ({len(self.data['services'])} сервисов)")
-        print("✅ Анализ завершён\n")
+
+        print(f"{'=' * 70}\n")
+
+    def _detect_framework(self, language: str) -> str:
+        """Определяет используемый фреймворк"""
+        if language not in self.FRAMEWORK_DETECTION:
+            return None
+
+        frameworks = self.FRAMEWORK_DETECTION[language]
+
+        if language == 'python':
+            return self._detect_python_framework(frameworks)
+        elif language in ['node', 'typescript']:
+            return self._detect_node_framework(frameworks)
+        elif language in ['java', 'kotlin']:
+            return self._detect_java_framework(frameworks)
+        elif language == 'go':
+            return self._detect_go_framework(frameworks)
+
+        return None
+
+    def _detect_go_framework(self, frameworks: Dict) -> str:
+        """Определяет Go фреймворк"""
+        go_mod = os.path.join(self.project_path, "go.mod")
+        if os.path.exists(go_mod):
+            with open(go_mod, 'r', encoding='utf-8') as f:
+                content = f.read()
+                for framework, markers in frameworks.items():
+                    if any(marker in content for marker in markers):
+                        return framework
+        return None
+
+    def _detect_python_framework(self, frameworks: Dict) -> str:
+        """Определяет Python фреймворк"""
+        req_file = os.path.join(self.project_path, "requirements.txt")
+        if os.path.exists(req_file):
+            with open(req_file, 'r', encoding='utf-8') as f:
+                content = f.read().lower()
+                for framework, markers in frameworks.items():
+                    if any(marker.lower() in content for marker in markers):
+                        return framework
+
+        # Проверяем pyproject.toml
+        pyproject = os.path.join(self.project_path, "pyproject.toml")
+        if os.path.exists(pyproject):
+            with open(pyproject, 'r', encoding='utf-8') as f:
+                content = f.read().lower()
+                for framework, markers in frameworks.items():
+                    if any(marker.lower() in content for marker in markers):
+                        return framework
+        return None
+
+    def _detect_node_framework(self, frameworks: Dict) -> str:
+        """Определяет Node.js/TypeScript фреймворк"""
+        pkg_json = os.path.join(self.project_path, "package.json")
+        if os.path.exists(pkg_json):
+            try:
+                with open(pkg_json, 'r', encoding='utf-8') as f:
+                    pkg = json.load(f)
+                    deps = {**pkg.get('dependencies', {}), **pkg.get('devDependencies', {})}
+                    for framework, markers in frameworks.items():
+                        if any(marker in deps for marker in markers):
+                            return framework
+            except:
+                pass
+        return None
+
+    def _detect_java_framework(self, frameworks: Dict) -> str:
+        """Определяет Java/Kotlin фреймворк"""
+        # Проверяем pom.xml
+        pom_xml = os.path.join(self.project_path, "pom.xml")
+        if os.path.exists(pom_xml):
+            with open(pom_xml, 'r', encoding='utf-8') as f:
+                content = f.read()
+                for framework, markers in frameworks.items():
+                    if any(marker in content for marker in markers):
+                        return framework
+
+        # Проверяем build.gradle
+        for gradle_file in ['build.gradle', 'build.gradle.kts']:
+            gradle_path = os.path.join(self.project_path, gradle_file)
+            if os.path.exists(gradle_path):
+                with open(gradle_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    for framework, markers in frameworks.items():
+                        if any(marker in content for marker in markers):
+                            return framework
+        return None
+
+    def _detect_dependencies(self, language: str) -> List[str]:
+        """Определяет основные зависимости проекта"""
+        deps = []
+
+        if language == 'python':
+            req_file = os.path.join(self.project_path, "requirements.txt")
+            if os.path.exists(req_file):
+                with open(req_file, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith('#'):
+                            dep = line.split('==')[0].split('>=')[0].split('~=')[0]
+                            deps.append(dep)
+
+        elif language in ['node', 'typescript']:
+            pkg_json = os.path.join(self.project_path, "package.json")
+            if os.path.exists(pkg_json):
+                try:
+                    with open(pkg_json, 'r', encoding='utf-8') as f:
+                        pkg = json.load(f)
+                        deps = list(pkg.get('dependencies', {}).keys())
+                except:
+                    pass
+
+        elif language == 'go':
+            go_mod = os.path.join(self.project_path, "go.mod")
+            if os.path.exists(go_mod):
+                with open(go_mod, 'r', encoding='utf-8') as f:
+                    in_require = False
+                    for line in f:
+                        line = line.strip()
+
+                        if line.startswith('require ('):
+                            in_require = True
+                            continue
+
+                        if in_require:
+                            if line == ')':
+                                break
+                            if line and not line.startswith('//'):
+                                dep = line.split()[0] if line.split() else None
+                                if dep:
+                                    deps.append(dep)
+
+                        elif line.startswith('require ') and '(' not in line:
+                            dep = line.replace('require', '').strip().split()[0]
+                            deps.append(dep)
+
+        elif language in ['java', 'kotlin']:
+            # Maven pom.xml
+            pom_xml = os.path.join(self.project_path, "pom.xml")
+            if os.path.exists(pom_xml):
+                with open(pom_xml, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    artifacts = re.findall(r'<artifactId>(.*?)</artifactId>', content)
+                    deps = artifacts[:20]
+
+        return deps[:10]  # Топ 10
 
     def _get_build_image(self, language: str) -> str:
         """Возвращает образ для сборки артефактов"""
@@ -627,6 +853,8 @@ CMD ["rails", "server", "-b", "0.0.0.0", "-p", "3000"]
         return {
             'language': self.data['language_info']['language'],
             'version': self.data['version'],
+            'framework': self.data.get('framework'),
+            'dependencies': self.data.get('dependencies', []),
             'dockerfile_exists': self.data['dockerfile_exists'],
             'dockerfile_info': self.data.get('dockerfile_info'),
             'docker_compose_exists': self.data.get('docker_compose_exists', False),

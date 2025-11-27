@@ -1,4 +1,4 @@
-# final_ci_generator.py
+# src/final_ci_generator.py
 
 from project_analyzer import ProjectAnalyzer
 from build_generator import BuildStageGenerator
@@ -71,12 +71,8 @@ class FinalCIGenerator:
 
         # Deploy stage
         print("  → Генерирую DEPLOY stage...")
-        # решаете в main.py, как узнавать, есть ли docker-compose.yml
-        # пока можно просто передать False (без compose),
-        # но лучше прокинуть флаг снаружи
-        deploy_gen = DeployStageGenerator(self.config, use_compose=False)
-        self.stages['deploy'] = deploy_gen.get_output_string()
-
+        deploy_gen = DeployStageGenerator(self.config, self.sync_target, self.deploy_target)
+        self.stages['deploy'] = deploy_gen.generate()
 
         print("\n✅ Все stage'и готовы\n")
 
@@ -92,10 +88,20 @@ class FinalCIGenerator:
         config = f"""stages:
 {stages_list}
 
-variables:
 """
 
-        # Переменные в зависимости от sync_target
+        # ========== НОВОЕ: Добавляем переменные окружения из .env ==========
+        if hasattr(self.analyzer, 'env_analyzer') and self.analyzer.env_analyzer.env_vars:
+            env_section = self.analyzer.env_analyzer.generate_gitlab_ci_env_section()
+            if env_section:
+                config += "# ========== ENVIRONMENT VARIABLES ==========\n"
+                config += env_section
+                config += "\n"
+
+        # Стандартные переменные в зависимости от sync_target
+        config += "# ========== CI/CD VARIABLES ==========\n"
+        config += "variables:\n"
+
         if self.sync_target == 'docker-registry':
             config += """  DOCKER_IMAGE_TAG: "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
   DOCKER_IMAGE_LATEST: "$CI_REGISTRY_IMAGE:latest"
@@ -133,6 +139,11 @@ variables:
         print(f"\n📦 Проект:")
         print(f"   Язык: {self.config['language']}")
         print(f"   Версия: {self.config['version']}")
+
+        # ========== НОВОЕ: Вывод фреймворка ==========
+        if self.config.get('framework'):
+            print(f"   Фреймворк: {self.config['framework']}")
+
         print(f"   Dockerfile: {'✅ Найден' if self.config['dockerfile_exists'] else '❌ Не найден'}")
 
         if self.config.get('docker_compose_exists'):
@@ -150,6 +161,16 @@ variables:
             print(f"   Сервисов с Dockerfile: {len(self.config['services'])}")
             for svc in self.config['services']:
                 print(f"      → {svc['name']} ({svc['path']})")
+
+        # ========== НОВОЕ: Вывод статистики по .env ==========
+        if self.config.get('env_summary', {}).get('total_vars', 0) > 0:
+            env_sum = self.config['env_summary']
+            print(f"\n🔐 Переменные окружения:")
+            print(f"   Всего: {env_sum['total_vars']}")
+            print(f"   Секреты: {env_sum['sensitive_vars']}")
+            print(f"   Обязательные: {env_sum['required_vars']}")
+            if env_sum.get('env_files'):
+                print(f"   Файлы: {', '.join(env_sum['env_files'])}")
 
         print(f"\n🔄 Конфигурация:")
         print(f"   Sync target: {self.sync_target}")
